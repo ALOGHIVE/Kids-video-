@@ -30,25 +30,21 @@ TIMING_FILE = os.path.join(
 
 
 VOICE = "en-US-AriaNeural"
-
 RATE = "-5%"
 PITCH = "+2Hz"
 VOLUME = "+0%"
 
 
 def load_story():
-
     with open(
         STORY_FILE,
         "r",
         encoding="utf-8"
     ) as file:
-
         return json.load(file)
 
 
 def clean_text(text):
-
     text = re.sub(
         r"\s+",
         " ",
@@ -59,11 +55,9 @@ def clean_text(text):
 
 
 def build_narration_parts(story):
-
     parts = []
 
     for scene in story["scenes"]:
-
         parts.append({
             "type": "scene",
             "scene_number": scene["scene_number"],
@@ -90,7 +84,6 @@ def build_narration_parts(story):
 
 
 def combine_text(parts):
-
     return "\n\n".join(
         part["text"]
         for part in parts
@@ -99,21 +92,17 @@ def combine_text(parts):
 
 
 def format_timestamp(seconds):
-
     milliseconds = int(
         round(seconds * 1000)
     )
 
     hours = milliseconds // 3600000
-
     milliseconds %= 3600000
 
     minutes = milliseconds // 60000
-
     milliseconds %= 60000
 
     secs = milliseconds // 1000
-
     milliseconds %= 1000
 
     return (
@@ -136,26 +125,26 @@ async def generate_audio(text):
 
     boundaries = []
 
-    async for item in communicator.stream():
+    with open(
+        AUDIO_FILE,
+        "wb"
+    ) as file:
 
-        if item["type"] == "audio":
+        async for item in communicator.stream():
 
-            with open(
-                AUDIO_FILE,
-                "ab"
-            ) as file:
+            if item["type"] == "audio":
 
                 file.write(
                     item["data"]
                 )
 
-        elif item["type"] == "WordBoundary":
+            elif item["type"] == "WordBoundary":
 
-            boundaries.append(item)
+                boundaries.append(item)
 
-        elif item["type"] == "SentenceBoundary":
+            elif item["type"] == "SentenceBoundary":
 
-            boundaries.append(item)
+                boundaries.append(item)
 
     return boundaries
 
@@ -253,11 +242,9 @@ def map_scenes_to_timing(
         ]
 
         if not selected:
-
             continue
 
         start = selected[0]["start"]
-
         end = selected[-1]["end"]
 
         timing.append({
@@ -298,7 +285,7 @@ def map_scenes_to_timing(
                     selected[-1]["end"]
                     - selected[0]["start"]
                 )
-            )
+            })
 
             sentence_index += count
 
@@ -362,10 +349,8 @@ async def main():
         narration
     )
 
-    sentence_timings = (
-        build_sentence_timings(
-            boundaries
-        )
+    sentence_timings = build_sentence_timings(
+        boundaries
     )
 
     if not sentence_timings:
@@ -419,7 +404,4 @@ async def main():
 
 
 if __name__ == "__main__":
-
-    asyncio.run(
-        main()
-            )
+    asyncio.run(main())
