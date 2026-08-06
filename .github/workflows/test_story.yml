@@ -1,47 +1,106 @@
-name: Kids Story Generator
+name: NobiNest Kids Episode Generator
 
 on:
   workflow_dispatch:
 
 jobs:
-  generate-story:
+  generate-episode:
 
     runs-on: ubuntu-latest
 
     steps:
 
+      # ==========================================
+      # 1. Get repository
+      # ==========================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+
+      # ==========================================
+      # 2. Set up Python
+      # ==========================================
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
+
+
+      # ==========================================
+      # 3. Install dependencies
+      # ==========================================
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+
+      # ==========================================
+      # 4. Create output directory
+      # ==========================================
+
+      - name: Prepare output directory
+        run: |
+          mkdir -p output
+
+
+      # ==========================================
+      # 5. Generate children's story
+      # ==========================================
+
       - name: Generate children's story
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3.6-flash
         run: |
           python creator/story_generator.py
 
+
+      # ==========================================
+      # 6. Generate narration
+      # ==========================================
+
       - name: Generate narration
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python creator/voice_generator.py
 
+
+      # ==========================================
+      # 7. Generate scene plan
+      # ==========================================
+
       - name: Generate scene plan
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3.6-flash
         run: |
           python creator/scene_generator.py
 
-      - name: Generate free cartoon scenes
-        run: |
-          python creator/image_generator.py
 
-      - name: Save generated content
+      # ==========================================
+      # 8. Check generated files
+      # ==========================================
+
+      - name: Check generated files
+        run: |
+          echo "======================================"
+          echo "GENERATED FILES"
+          echo "======================================"
+          find output -maxdepth 2 -type f -print
+          echo "======================================"
+
+
+      # ==========================================
+      # 9. Upload episode assets
+      # ==========================================
+
+      - name: Upload episode assets
         uses: actions/upload-artifact@v4
         with:
           name: kids-episode-assets
