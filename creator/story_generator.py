@@ -8,7 +8,7 @@ STORY_JSON = os.path.join(OUTPUT_DIR, "story.json")
 STORY_TXT = os.path.join(OUTPUT_DIR, "story.txt")
 
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.6-flash"
 
 
 CHARACTERS = {
