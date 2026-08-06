@@ -37,13 +37,11 @@ jobs:
         run: |
           python creator/scene_generator.py
 
-      - name: Generate scene images
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      - name: Generate free cartoon scenes
         run: |
           python creator/image_generator.py
 
-      - name: Save generated episode assets
+      - name: Save generated content
         uses: actions/upload-artifact@v4
         with:
           name: kids-episode-assets
