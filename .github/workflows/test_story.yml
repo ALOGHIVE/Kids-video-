@@ -27,8 +27,12 @@ jobs:
         run: |
           python creator/story_generator.py
 
-      - name: Save generated story
+      - name: Generate narration
+        run: |
+          python creator/voice_generator.py
+
+      - name: Save generated content
         uses: actions/upload-artifact@v4
         with:
-          name: kids-story
+          name: kids-episode-assets
           path: output/
