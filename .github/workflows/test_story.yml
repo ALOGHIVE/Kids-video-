@@ -5,6 +5,7 @@ on:
 
 jobs:
   generate-story:
+
     runs-on: ubuntu-latest
 
     steps:
@@ -36,7 +37,13 @@ jobs:
         run: |
           python creator/scene_generator.py
 
-      - name: Save generated content
+      - name: Generate scene images
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python creator/image_generator.py
+
+      - name: Save generated episode assets
         uses: actions/upload-artifact@v4
         with:
           name: kids-episode-assets
