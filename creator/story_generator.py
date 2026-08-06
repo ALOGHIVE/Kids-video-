@@ -4,12 +4,31 @@ from google import genai
 
 
 OUTPUT_DIR = "output"
-STORY_JSON = os.path.join(OUTPUT_DIR, "story.json")
-STORY_TXT = os.path.join(OUTPUT_DIR, "story.txt")
+
+STORY_JSON = os.path.join(
+    OUTPUT_DIR,
+    "story.json"
+)
+
+STORY_TXT = os.path.join(
+    OUTPUT_DIR,
+    "story.txt"
+)
 
 
-MODEL = "gemini-3.6-flash"
+# =========================================================
+# MODEL CONFIGURATION
+# =========================================================
 
+MODEL = os.environ.get(
+    "GEMINI_MODEL",
+    "gemini-3.6-flash"
+)
+
+
+# =========================================================
+# CANONICAL CHARACTERS
+# =========================================================
 
 CHARACTERS = {
     "Bobo": {
@@ -20,7 +39,9 @@ CHARACTERS = {
             "round face, small rounded ears, large expressive brown eyes, "
             "short arms and legs, and a bright yellow scarf"
         ),
-        "personality": "curious, playful, kind and slightly funny"
+        "personality": (
+            "curious, playful, kind and slightly funny"
+        )
     },
 
     "Mimi": {
@@ -31,7 +52,9 @@ CHARACTERS = {
             "long rounded ears with pink inner ears, large expressive eyes, "
             "tiny pink nose, and a small purple backpack"
         ),
-        "personality": "clever, curious, patient and encouraging"
+        "personality": (
+            "clever, curious, patient and encouraging"
+        )
     },
 
     "Kiki": {
@@ -39,164 +62,398 @@ CHARACTERS = {
         "species": "little bird",
         "appearance": (
             "small cheerful yellow bird with bright yellow feathers, "
-            "bright blue wings, large expressive eyes, and a small orange beak"
+            "bright blue wings, large expressive eyes, "
+            "and a small orange beak"
         ),
-        "personality": "energetic, musical, cheerful and playful"
+        "personality": (
+            "energetic, musical, cheerful and playful"
+        )
     }
 }
 
 
+# =========================================================
+# SYSTEM PROMPT
+# =========================================================
+
 SYSTEM_PROMPT = """
-You are the head writer for NobiNest, an original preschool
-children's educational story universe.
+You are the head writer for NobiNest.
 
-The target audience is children approximately 3 to 7 years old.
+NobiNest is an original preschool children's
+educational entertainment universe.
 
-Create a short, safe, educational children's episode.
+TARGET AUDIENCE:
+Children approximately 3 to 7 years old.
+
+Create one short, safe, educational episode.
 
 The episode must:
-1. Teach one simple educational concept.
-2. Use simple spoken English.
-3. Have a clear beginning, middle and ending.
-4. Be warm, positive and age appropriate.
-5. Avoid violence, frightening situations, dangerous behavior,
-   romance, politics, religion and mature themes.
-6. Use only the NobiNest characters provided below.
-7. Keep character appearances EXACTLY consistent.
-8. Create 4 visual scenes.
-9. Each scene should contain approximately 30 to 60 spoken words.
-10. The total narration should be approximately 100 to 150 seconds
-    when spoken naturally.
-11. Include a short educational song of approximately 15 to 25 seconds.
-12. Include a short closing message.
-13. Do not include emojis.
-14. Do not include markdown.
-15. Return ONLY valid JSON.
 
-IMPORTANT:
-The characters below are fixed canonical characters.
-Do not change their species, colors, clothing or physical features.
+1. Teach ONE simple educational concept.
+
+2. Use very simple spoken English.
+
+3. Have a clear beginning, middle and ending.
+
+4. Be warm, playful and positive.
+
+5. Avoid violence.
+
+6. Avoid frightening situations.
+
+7. Avoid dangerous behavior.
+
+8. Avoid romance.
+
+9. Avoid politics.
+
+10. Avoid religion.
+
+11. Avoid mature themes.
+
+12. Use ONLY the canonical NobiNest characters.
+
+13. NEVER change their species.
+
+14. NEVER change their colors.
+
+15. NEVER change their clothing.
+
+16. NEVER change their important physical features.
+
+17. Create exactly FOUR scenes.
+
+18. Each scene should contain approximately
+30 to 60 spoken words.
+
+19. The total spoken story should be suitable
+for a short children's video.
+
+20. Include a short educational song.
+
+21. Include a short friendly ending.
+
+22. Do not use emojis.
+
+23. Do not use Markdown.
+
+24. Return ONLY valid JSON.
 
 CANONICAL CHARACTERS:
 
-Bobo:
-small friendly brown bear with soft fluffy brown fur,
+BOBO:
+
+Small friendly brown bear with soft fluffy brown fur,
 round face, small rounded ears, large expressive brown eyes,
 short arms and legs, and a bright yellow scarf.
-Personality: curious, playful, kind and slightly funny.
 
-Mimi:
-small friendly white rabbit with soft white fur,
+Personality:
+Curious, playful, kind and slightly funny.
+
+MIMI:
+
+Small friendly white rabbit with soft white fur,
 long rounded ears with pink inner ears, large expressive eyes,
 tiny pink nose, and a small purple backpack.
-Personality: clever, curious, patient and encouraging.
 
-Kiki:
-small cheerful yellow bird with bright yellow feathers,
+Personality:
+Clever, curious, patient and encouraging.
+
+KIKI:
+
+Small cheerful yellow bird with bright yellow feathers,
 bright blue wings, large expressive eyes, and a small orange beak.
-Personality: energetic, musical, cheerful and playful.
+
+Personality:
+Energetic, musical, cheerful and playful.
 """
 
 
+# =========================================================
+# API KEY
+# =========================================================
+
 def get_api_key():
-    key = os.environ.get("GEMINI_API_KEY")
+
+    key = os.environ.get(
+        "GEMINI_API_KEY"
+    )
 
     if not key:
+
         raise RuntimeError(
-            "GEMINI_API_KEY is not available."
+            "GEMINI_API_KEY is not available. "
+            "Check your GitHub repository secret."
         )
 
     return key
 
 
-def create_story():
-    client = genai.Client(
+# =========================================================
+# GEMINI CLIENT
+# =========================================================
+
+def create_client():
+
+    return genai.Client(
         api_key=get_api_key()
     )
 
+
+# =========================================================
+# STORY GENERATION
+# =========================================================
+
+def create_story():
+
+    client = create_client()
+
     prompt = SYSTEM_PROMPT + """
 
-Create an episode about a simple preschool lesson.
+Create a completely new NobiNest episode.
 
-Return exactly this JSON structure:
+Choose ONE simple preschool lesson.
+
+Good examples include:
+
+colors
+shapes
+counting
+big and small
+hot and cold
+up and down
+inside and outside
+sharing
+kindness
+friendship
+animals
+fruits
+weather
+cleaning up
+simple emotions
+basic nature
+good manners
+
+The lesson should be demonstrated naturally
+through the story.
+
+Return EXACTLY this JSON structure:
 
 {
   "title": "Episode title",
-  "lesson": "One sentence describing the lesson",
-  "characters": ["Bobo", "Mimi", "Kiki"],
+
+  "lesson": "One simple sentence describing what children learn",
+
+  "characters": [
+    "Bobo",
+    "Mimi",
+    "Kiki"
+  ],
 
   "character_bible": {
+
     "Bobo": {
-      "appearance": "exact canonical appearance",
-      "personality": "personality"
+      "appearance": "Exact canonical Bobo appearance",
+      "personality": "Exact canonical Bobo personality"
     },
+
     "Mimi": {
-      "appearance": "exact canonical appearance",
-      "personality": "personality"
+      "appearance": "Exact canonical Mimi appearance",
+      "personality": "Exact canonical Mimi personality"
     },
+
     "Kiki": {
-      "appearance": "exact canonical appearance",
-      "personality": "personality"
+      "appearance": "Exact canonical Kiki appearance",
+      "personality": "Exact canonical Kiki personality"
     }
+
   },
 
   "scenes": [
+
     {
       "scene_number": 1,
-      "visual_description": "Detailed visual description",
-      "narration": "Spoken narration"
+
+      "visual_description":
+      "Detailed description of what the viewer sees.",
+
+      "image_prompt":
+      "Detailed visual prompt for creating this scene.",
+
+      "narration":
+      "Spoken narration for the scene."
     },
+
     {
       "scene_number": 2,
-      "visual_description": "Detailed visual description",
-      "narration": "Spoken narration"
+
+      "visual_description":
+      "Detailed description of what the viewer sees.",
+
+      "image_prompt":
+      "Detailed visual prompt for creating this scene.",
+
+      "narration":
+      "Spoken narration for the scene."
     },
+
     {
       "scene_number": 3,
-      "visual_description": "Detailed visual description",
-      "narration": "Spoken narration"
+
+      "visual_description":
+      "Detailed description of what the viewer sees.",
+
+      "image_prompt":
+      "Detailed visual prompt for creating this scene.",
+
+      "narration":
+      "Spoken narration for the scene."
     },
+
     {
       "scene_number": 4,
-      "visual_description": "Detailed visual description",
-      "narration": "Spoken narration"
+
+      "visual_description":
+      "Detailed description of what the viewer sees.",
+
+      "image_prompt":
+      "Detailed visual prompt for creating this scene.",
+
+      "narration":
+      "Spoken narration for the scene."
     }
+
   ],
 
   "song": {
-    "lyrics": "Short educational song lyrics"
+
+    "lyrics":
+    "Short simple educational song."
   },
 
-  "ending": "Short friendly educational closing message"
+  "ending":
+  "Short friendly educational closing message."
 }
 
-Do not invent another character.
-Do not change the canonical character designs.
-Do not include duration_seconds.
+IMAGE PROMPT RULES:
+
+Every image_prompt must describe the canonical
+characters accurately.
+
+Always repeat the relevant character appearance
+inside the image prompt.
+
+Use bright, friendly, colorful 2D children's
+storybook artwork.
+
+Use a clean composition.
+
+Use expressive faces.
+
+Use simple backgrounds.
+
+Keep the characters visually consistent.
+
+Do not introduce new named characters.
+
+Do not include text inside the image.
+
+Do not include logos.
+
+Do not include watermarks.
+
+Do not make the scene frightening.
+
+Do not make the scene realistic.
+
+The images should look like frames from the
+same children's animated story.
+
+IMPORTANT:
+
+Do not add fields that are not specified.
+
+Do not add duration_seconds.
+
+Do not add Markdown.
+
+Return ONLY valid JSON.
 """
+
+    print(
+        f"Using Gemini model: {MODEL}"
+    )
 
     response = client.models.generate_content(
         model=MODEL,
         contents=prompt
     )
 
+    if not response.text:
+
+        raise RuntimeError(
+            "Gemini returned an empty response."
+        )
+
     text = response.text.strip()
 
-    if text.startswith("```"):
-        text = text.replace("```json", "")
-        text = text.replace("```", "")
-        text = text.strip()
+    # Remove accidental Markdown fences.
+    if text.startswith(
+        "```json"
+    ):
 
-    story = json.loads(text)
+        text = text[
+            7:
+        ].strip()
 
-    validate_story(story)
+    elif text.startswith(
+        "```"
+    ):
+
+        text = text[
+            3:
+        ].strip()
+
+    if text.endswith(
+        "```"
+    ):
+
+        text = text[
+            :-3
+        ].strip()
+
+    try:
+
+        story = json.loads(
+            text
+        )
+
+    except json.JSONDecodeError as error:
+
+        print()
+        print(
+            "Gemini returned invalid JSON:"
+        )
+        print(text)
+
+        raise RuntimeError(
+            "Gemini did not return valid JSON."
+        ) from error
+
+    validate_story(
+        story
+    )
 
     return story
 
 
+# =========================================================
+# VALIDATION
+# =========================================================
+
 def validate_story(story):
 
-    required = [
+    required_fields = [
         "title",
         "lesson",
         "characters",
@@ -206,41 +463,149 @@ def validate_story(story):
         "ending"
     ]
 
-    for key in required:
-        if key not in story:
+    for field in required_fields:
+
+        if field not in story:
+
             raise ValueError(
-                f"Story is missing required field: {key}"
+                f"Story is missing required field: {field}"
             )
 
-    if len(story["scenes"]) != 4:
+    # -----------------------------------------------------
+    # Characters
+    # -----------------------------------------------------
+
+    expected_characters = [
+        "Bobo",
+        "Mimi",
+        "Kiki"
+    ]
+
+    if story[
+        "characters"
+    ] != expected_characters:
+
         raise ValueError(
-            "Story must contain exactly 4 scenes."
+            "The story must use exactly "
+            "Bobo, Mimi and Kiki."
         )
+
+    # -----------------------------------------------------
+    # Character bible
+    # -----------------------------------------------------
 
     for character in CHARACTERS:
 
-        if character not in story["character_bible"]:
+        if character not in story[
+            "character_bible"
+        ]:
+
             raise ValueError(
                 f"Missing character bible entry: {character}"
             )
 
-    for scene in story["scenes"]:
+    # -----------------------------------------------------
+    # Scenes
+    # -----------------------------------------------------
 
-        if "scene_number" not in scene:
+    scenes = story[
+        "scenes"
+    ]
+
+    if not isinstance(
+        scenes,
+        list
+    ):
+
+        raise ValueError(
+            "scenes must be a list."
+        )
+
+    if len(
+        scenes
+    ) != 4:
+
+        raise ValueError(
+            "Story must contain exactly 4 scenes."
+        )
+
+    for expected_number, scene in enumerate(
+        scenes,
+        start=1
+    ):
+
+        if scene.get(
+            "scene_number"
+        ) != expected_number:
+
             raise ValueError(
-                "Scene is missing scene_number."
+                f"Expected scene number {expected_number}."
             )
 
-        if "visual_description" not in scene:
+        if not scene.get(
+            "visual_description"
+        ):
+
             raise ValueError(
-                "Scene is missing visual_description."
+                f"Scene {expected_number} "
+                "has no visual_description."
             )
 
-        if "narration" not in scene:
+        if not scene.get(
+            "image_prompt"
+        ):
+
             raise ValueError(
-                "Scene is missing narration."
+                f"Scene {expected_number} "
+                "has no image_prompt."
             )
 
+        if not scene.get(
+            "narration"
+        ):
+
+            raise ValueError(
+                f"Scene {expected_number} "
+                "has no narration."
+            )
+
+    # -----------------------------------------------------
+    # Song
+    # -----------------------------------------------------
+
+    if not isinstance(
+        story["song"],
+        dict
+    ):
+
+        raise ValueError(
+            "song must be an object."
+        )
+
+    if not story["song"].get(
+        "lyrics"
+    ):
+
+        raise ValueError(
+            "Song lyrics are missing."
+        )
+
+    # -----------------------------------------------------
+    # Ending
+    # -----------------------------------------------------
+
+    if not story.get(
+        "ending"
+    ):
+
+        raise ValueError(
+            "Story ending is missing."
+        )
+
+
+# =========================================================
+# SAVE STORY
+# =========================================================
 
 def save_story(story):
 
@@ -248,6 +613,8 @@ def save_story(story):
         OUTPUT_DIR,
         exist_ok=True
     )
+
+    # Save JSON.
 
     with open(
         STORY_JSON,
@@ -262,14 +629,20 @@ def save_story(story):
             ensure_ascii=False
         )
 
+    # -----------------------------------------------------
+    # Create readable TXT
+    # -----------------------------------------------------
+
     text_parts = [
         story["title"],
         "",
         f"Lesson: {story['lesson']}",
-        ""
+        "",
     ]
 
-    for scene in story["scenes"]:
+    for scene in story[
+        "scenes"
+    ]:
 
         text_parts.append(
             f"Scene {scene['scene_number']}"
@@ -281,13 +654,20 @@ def save_story(story):
 
         text_parts.append("")
 
-    text_parts.append("Song")
+    text_parts.append(
+        "Song"
+    )
+
     text_parts.append(
         story["song"]["lyrics"]
     )
 
     text_parts.append("")
-    text_parts.append("Ending")
+
+    text_parts.append(
+        "Ending"
+    )
+
     text_parts.append(
         story["ending"]
     )
@@ -299,27 +679,73 @@ def save_story(story):
     ) as file:
 
         file.write(
-            "\n".join(text_parts)
+            "\n".join(
+                text_parts
+            )
         )
 
 
+# =========================================================
+# MAIN
+# =========================================================
+
 def main():
 
-    print("======================================")
-    print("NOBINEST STORY GENERATOR")
-    print("======================================")
+    print(
+        "======================================"
+    )
+
+    print(
+        "NOBINEST STORY GENERATOR"
+    )
+
+    print(
+        "======================================"
+    )
+
+    print(
+        f"Model: {MODEL}"
+    )
+
+    print()
 
     story = create_story()
 
-    save_story(story)
+    save_story(
+        story
+    )
 
-    print("Story generated successfully.")
-    print(f"Title: {story['title']}")
-    print(f"Lesson: {story['lesson']}")
-    print("Scenes: 4")
-    print("Saved to output/story.json")
-    print("Saved to output/story.txt")
+    print()
+
+    print(
+        "STORY GENERATED SUCCESSFULLY"
+    )
+
+    print(
+        f"Title: {story['title']}"
+    )
+
+    print(
+        f"Lesson: {story['lesson']}"
+    )
+
+    print(
+        "Scenes: 4"
+    )
+
+    print(
+        "Image prompts: 4"
+    )
+
+    print(
+        "Saved: output/story.json"
+    )
+
+    print(
+        "Saved: output/story.txt"
+    )
 
 
 if __name__ == "__main__":
+
     main()
