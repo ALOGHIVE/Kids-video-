@@ -3,6 +3,13 @@ name: NobiNest Kids Episode Generator
 on:
   workflow_dispatch:
 
+  schedule:
+    # Runs every day at 12:00 UTC
+    - cron: "0 12 * * *"
+
+permissions:
+  contents: read
+
 jobs:
   generate-episode:
 
@@ -10,99 +17,115 @@ jobs:
 
     steps:
 
-      # ==========================================
-      # 1. Get repository
-      # ==========================================
+      # ----------------------------------------
+      # CHECKOUT
+      # ----------------------------------------
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ==========================================
-      # 2. Set up Python
-      # ==========================================
+      # ----------------------------------------
+      # PYTHON
+      # ----------------------------------------
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
 
 
-      # ==========================================
-      # 3. Install dependencies
-      # ==========================================
+      # ----------------------------------------
+      # INSTALL FFMPEG
+      # ----------------------------------------
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+
+      # ----------------------------------------
+      # INSTALL PYTHON DEPENDENCIES
+      # ----------------------------------------
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install google-genai edge-tts pillow
 
 
-      # ==========================================
-      # 4. Create output directory
-      # ==========================================
+      # ----------------------------------------
+      # PREPARE OUTPUT
+      # ----------------------------------------
 
       - name: Prepare output directory
         run: |
+          rm -rf output
           mkdir -p output
+          mkdir -p output/scenes
 
 
-      # ==========================================
-      # 5. Generate children's story
-      # ==========================================
+      # ----------------------------------------
+      # GENERATE STORY
+      # ----------------------------------------
 
       - name: Generate children's story
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-3.6-flash
         run: |
           python creator/story_generator.py
 
 
-      # ==========================================
-      # 6. Generate narration
-      # ==========================================
+      # ----------------------------------------
+      # GENERATE NARRATION
+      # ----------------------------------------
 
       - name: Generate narration
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python creator/voice_generator.py
 
 
-      # ==========================================
-      # 7. Generate scene plan
-      # ==========================================
+      # ----------------------------------------
+      # GENERATE VIDEO
+      # ----------------------------------------
 
-      - name: Generate scene plan
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-3.6-flash
+      - name: Render children's video
         run: |
-          python creator/scene_generator.py
+          python creator/video_renderer.py
 
 
-      # ==========================================
-      # 8. Check generated files
-      # ==========================================
+      # ----------------------------------------
+      # CHECK FILES
+      # ----------------------------------------
 
       - name: Check generated files
         run: |
-          echo "======================================"
-          echo "GENERATED FILES"
-          echo "======================================"
-          find output -maxdepth 2 -type f -print
-          echo "======================================"
+          echo "Generated files:"
+          find output -maxdepth 2 -type f -printf "%p %s bytes\n"
+
+          echo ""
+          echo "Video information:"
+          ffprobe -v error \
+            -show_entries format=duration,size \
+            -of default=noprint_wrappers=1 \
+            output/nobinnest_episode.mp4
 
 
-      # ==========================================
-      # 9. Upload episode assets
-      # ==========================================
+      # ----------------------------------------
+      # UPLOAD EPISODE
+      # ----------------------------------------
 
-      - name: Upload episode assets
+      - name: Upload episode
         uses: actions/upload-artifact@v4
         with:
-          name: kids-episode-assets
-          path: output/
+          name: nobinest-kids-episode
+          path: |
+            output/nobinnest_episode.mp4
+            output/story.json
+            output/story.txt
+            output/narration.mp3
+            output/narration.srt
+            output/scenes/*.png
           if-no-files-found: error
+          retention-days: 7
