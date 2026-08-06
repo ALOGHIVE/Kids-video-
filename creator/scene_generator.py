@@ -2,174 +2,187 @@ import json
 import os
 
 
-# =========================================================
-# NOBINEST SCENE GENERATOR
-# =========================================================
-
 OUTPUT_DIR = "output"
-STORY_FILE = os.path.join(OUTPUT_DIR, "story.json")
-SCENE_FILE = os.path.join(OUTPUT_DIR, "scenes.json")
+
+STORY_FILE = os.path.join(
+    OUTPUT_DIR,
+    "story.json"
+)
+
+SCENE_FILE = os.path.join(
+    OUTPUT_DIR,
+    "scenes.json"
+)
 
 
 VISUAL_STYLE = """
-Original NobiNest children's animation style.
+Original NobiNest preschool animation.
 
-Bright, friendly 2D cartoon appearance.
+Bright, warm, friendly 2D cartoon illustration.
 Soft rounded shapes.
+Clean simple backgrounds.
+Gentle cheerful lighting.
 Large expressive eyes.
-Simple clean backgrounds.
-Warm cheerful lighting.
-Safe and wholesome preschool environment.
-Strong visual contrast.
-No frightening elements.
+Child-friendly proportions.
+Wholesome preschool atmosphere.
+Clear visual storytelling.
+High visual clarity.
+No frightening imagery.
 No realistic humans.
-No text inside the artwork unless specifically requested.
-
-The characters must remain visually consistent from scene to scene.
+No copyrighted characters.
+No imitation of existing cartoon franchises.
+No written text inside the artwork.
+No logos.
+16:9 landscape composition.
 """
 
 
-CHARACTER_DESIGNS = {
-    "Bobo": {
-        "species": "little bear",
-        "appearance": (
-            "small friendly bear, round face, soft brown fur, "
-            "large expressive eyes, small rounded ears, "
-            "cheerful childlike expression"
-        ),
-        "personality": "curious, playful and kind"
-    },
-
-    "Mimi": {
-        "species": "little rabbit",
-        "appearance": (
-            "small friendly rabbit, soft cream fur, "
-            "long rounded ears, large expressive eyes, "
-            "tiny pink nose, cheerful childlike expression"
-        ),
-        "personality": "clever, curious and thoughtful"
-    },
-
-    "Kiki": {
-        "species": "little bird",
-        "appearance": (
-            "small cheerful bird, bright yellow feathers, "
-            "round body, tiny wings, large expressive eyes, "
-            "small orange beak"
-        ),
-        "personality": "musical, energetic and cheerful"
-    }
-}
-
-
 def load_story():
-    if not os.path.exists(STORY_FILE):
-        raise FileNotFoundError(
-            f"{STORY_FILE} was not found."
-        )
 
     with open(
         STORY_FILE,
         "r",
         encoding="utf-8"
     ) as file:
+
         return json.load(file)
 
 
-def character_description(character_names):
-    descriptions = []
+def build_character_bible(
+    story
+):
 
-    for name in character_names:
-        if name in CHARACTER_DESIGNS:
-            character = CHARACTER_DESIGNS[name]
+    bible = []
 
-            descriptions.append(
-                f"{name}: {character['appearance']}. "
-                f"Personality: {character['personality']}."
-            )
+    characters = story[
+        "character_bible"
+    ]
 
-    return " ".join(descriptions)
+    for name, data in characters.items():
 
+        bible.append(
+            f"""
+{name}:
+{data['appearance']}
+Personality:
+{data['personality']}
+""".strip()
+        )
 
-def build_scene_prompt(scene, story):
-
-    characters = story.get(
-        "characters",
-        ["Bobo"]
+    return "\n\n".join(
+        bible
     )
 
-    characters_text = character_description(
-        characters
+
+def build_prompt(
+    story,
+    scene
+):
+
+    character_bible = (
+        build_character_bible(
+            story
+        )
     )
 
-    prompt = f"""
-Create one original children's animation scene
-for the NobiNest universe.
+    return f"""
+Create one original NobiNest preschool
+animation scene.
 
 EPISODE:
-{story["title"]}
+{story['title']}
 
 EDUCATIONAL LESSON:
-{story["lesson"]}
+{story['lesson']}
 
-SCENE:
-{scene["scene_number"]}
+SCENE NUMBER:
+{scene['scene_number']}
 
 SCENE DESCRIPTION:
-{scene["visual_description"]}
+{scene['visual_description']}
 
-CHARACTERS:
-{characters_text}
+CANONICAL CHARACTER BIBLE:
+
+{character_bible}
 
 VISUAL STYLE:
+
 {VISUAL_STYLE}
 
-IMPORTANT:
-Keep the same character appearance throughout
-the entire episode.
+STRICT CONSISTENCY RULES:
 
-Do not introduce random characters.
+Use the character descriptions exactly.
 
-Do not use copyrighted characters.
+Do not change character species.
+
+Do not change fur or feather colors.
+
+Do not change clothing.
+
+Do not change important physical features.
+
+Do not invent additional main characters.
+
+Keep the characters visually consistent
+with every other scene in this episode.
+
+The image must clearly communicate
+the action described in the scene.
+
+Make the composition suitable for
+children aged approximately 3 to 7.
+
+Do not include captions.
+
+Do not include subtitles.
+
+Do not include written words.
+
+Do not include watermarks.
+
+Do not include logos.
 
 Do not imitate an existing cartoon.
 
-Make the composition clear enough for preschool
-children to immediately understand what is happening.
+Create an original NobiNest visual.
 
-Use a 16:9 landscape composition suitable for
-YouTube video.
-
-Do not place written words, captions or logos
-inside the artwork.
-"""
-
-    return " ".join(prompt.split())
+Use a 16:9 landscape composition.
+""".strip()
 
 
-def generate_scene_manifest(story):
+def generate_scene_manifest(
+    story
+):
 
     scenes = []
 
-    for scene in story.get("scenes", []):
+    for scene in story["scenes"]:
 
-        scene_data = {
-            "scene_number": scene["scene_number"],
-            "duration_seconds": scene["duration_seconds"],
-            "narration": scene["narration"],
-            "visual_description": scene["visual_description"],
-            "image_prompt": build_scene_prompt(
-                scene,
-                story
+        scenes.append({
+            "scene_number": scene[
+                "scene_number"
+            ],
+
+            "narration": scene[
+                "narration"
+            ],
+
+            "visual_description": scene[
+                "visual_description"
+            ],
+
+            "image_prompt": build_prompt(
+                story,
+                scene
             )
-        }
-
-        scenes.append(scene_data)
+        })
 
     return scenes
 
 
-def save_scenes(scenes):
+def save_manifest(
+    scenes
+):
 
     os.makedirs(
         OUTPUT_DIR,
@@ -202,7 +215,7 @@ def main():
         story
     )
 
-    save_scenes(
+    save_manifest(
         scenes
     )
 
@@ -217,4 +230,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
