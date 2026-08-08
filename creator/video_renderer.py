@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 # ============================================================
-# NOBINEST 2D MOTION RENDERER v4
+# NOBINEST 2D MOTION RENDERER v6 v6
 # ============================================================
 # Fully procedural 2D animation.
 #
@@ -452,7 +452,7 @@ def draw_kiki(draw, x, y, scale=1.0, phase=0.0, flight=0.0,
     draw.ellipse(
         [x+5*s, y+183*s, x+46*s, y+210*s],
         fill=orange,
-                )
+        )
 
 
 # ============================================================
@@ -539,6 +539,7 @@ def draw_background(draw, scene, t, camera_x):
             [fx-8+sway, fy-8, fx+8+sway, fy+8],
             fill=petal,
         )
+
 
 
 # ============================================================
@@ -774,6 +775,101 @@ def character_positions(scene, t, duration):
     }
 
 
+
+# ============================================================
+# EXPLICIT CHARACTER / OBJECT INTERACTIONS
+# ============================================================
+
+def draw_story_interactions(draw, story, scene, t, positions, camera_x, zoom):
+    """Make the generated story visible through concrete actions."""
+    text = " ".join(
+        str(s.get("visual_description", "")) + " " + str(s.get("narration", ""))
+        for s in story.get("scenes", [])
+    ).lower()
+
+    def wp(x, y):
+        return (
+            WIDTH/2 + (x - WIDTH/2 - camera_x) * zoom,
+            GROUND_Y + (y - GROUND_Y) * zoom,
+        )
+
+    bx, by = positions["Bobo"]
+    mx, my = positions["Mimi"]
+    kx, ky = positions["Kiki"]
+
+    # Scene 2: Bobo reaches toward the basket and carries the first apple.
+    if scene == 2 and "apple" in text:
+        progress = clamp((t - 0.8) / 3.0, 0, 1)
+        hand_x = bx + 72
+        hand_y = by + 145
+        basket_x, basket_y = 565, 430
+
+        # Apple travels from the tree area to Bobo's hand, then toward basket.
+        if progress < 0.55:
+            q = ease_in_out(progress / 0.55)
+            sx, sy = 1035, 245
+            ex, ey = hand_x, hand_y
+        else:
+            q = ease_in_out((progress - 0.55) / 0.45)
+            sx, sy = hand_x, hand_y
+            ex, ey = basket_x - 20, basket_y + 8
+
+        ax = lerp(sx, ex, q)
+        ay = lerp(sy, ey, q) - 35 * math.sin(q * math.pi)
+        px, py = wp(ax, ay)
+        draw_apple(draw, px, py, 0.34 * zoom)
+
+        # Reach lines make the action readable.
+        if 0.05 < progress < 0.7:
+            hx, hy = wp(hand_x, hand_y)
+            draw.line([(hx-18*zoom, hy-10*zoom), (px,py)],
+                      fill=(105,65,40), width=max(3,int(7*zoom)))
+
+    # Scene 3: Mimi holds the basket while Bobo adds apples.
+    if scene == 3 and "basket" in text:
+        bxw, byw = wp(565, 430)
+        # A small handle highlight and gentle lift make the basket feel held.
+        lift = 5 * math.sin(t * 2.5)
+        draw.arc(
+            [bxw-48*zoom, byw-55*zoom+lift,
+             bxw+48*zoom, byw+15*zoom+lift],
+            180, 360,
+            fill=(125,80,45),
+            width=max(2,int(5*zoom))
+        )
+
+        # Bobo presents an apple toward the basket.
+        if t > 0.7:
+            axw, ayw = wp(bx + 58, by + 125)
+            draw_apple(draw, axw, ayw, 0.31*zoom, 2*math.sin(t*4))
+
+    # Scene 3: Kiki flies down with the final apple.
+    if scene == 3 and "kiki" in text and "apple" in text:
+        q = clamp((t - 1.2) / 3.0, 0, 1)
+        # Kiki's position is already animated. Put the final apple at its beak.
+        if q > 0.15:
+            kxp, kyp = wp(kx + 45, ky + 55)
+            draw_apple(draw, kxp, kyp, 0.28*zoom, 2*math.sin(t*5))
+
+    # Scene 4: the completed basket is the focus of the celebration.
+    if scene == 4 and "three" in text and "apple" in text:
+        cx, cy = wp(565, 430)
+        pulse = 1.0 + 0.08*math.sin(t*4)
+        # Number 3 above the basket.
+        r = 25 * zoom * pulse
+        draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(245,180,70))
+        text_center(draw, "3", cx, cy-r*0.72,
+                    get_font(max(14,int(24*zoom)), True), (70,70,90))
+
+        # Celebration arcs.
+        for i in range(5):
+            a = t*2 + i*1.2
+            sx = cx + math.cos(a)*70*zoom
+            sy = cy - 30*zoom + math.sin(a)*35*zoom
+            draw.ellipse([sx-3*zoom,sy-3*zoom,sx+3*zoom,sy+3*zoom],
+                         fill=(255,215,70))
+
+
 # ============================================================
 # SCENE FRAME
 # ============================================================
@@ -873,6 +969,18 @@ def render_frame(story, scene, t, scene_duration, total_duration):
         flight=t,
     )
 
+    # Draw interaction details over the characters/world so objects visibly
+    # connect to the actions being narrated.
+    draw_story_interactions(
+        wd,
+        story,
+        scene,
+        t,
+        positions,
+        camera_x,
+        zoom,
+    )
+
     frame = Image.alpha_composite(frame.convert("RGBA"), world).convert("RGB")
 
     # Scene title.
@@ -889,45 +997,37 @@ def render_frame(story, scene, t, scene_duration, total_duration):
         (55,70,90),
     )
 
-    # Lesson card fades in after the first second.
-    fade = clamp((t-.8)/1.0, 0, 1)
-    alpha = int(225*fade)
+    # Avoid a large lesson card behind subtitles. For concrete stories,
+    # keep the frame clean and let the narration/subtitles carry the lesson.
+    concrete_story = any(
+        w in (" ".join(
+            str(s.get("visual_description","")) for s in story.get("scenes", [])
+        )).lower()
+        for w in ("apple","basket","tree","ball","flower","book","toy","cup","leaf")
+    )
 
-    if alpha:
-        overlay = Image.new("RGBA", (WIDTH,HEIGHT), (0,0,0,0))
-        od = ImageDraw.Draw(overlay)
-
+    if not concrete_story:
+        badge = Image.new("RGBA", (WIDTH, HEIGHT), (0,0,0,0))
+        bd = ImageDraw.Draw(badge)
         rounded(
-            od,
-            [70, 585, WIDTH-70, 692],
-            22,
-            (255,255,255,alpha),
-            (70,90,110,alpha),
+            bd,
+            [55, 575, WIDTH-55, 660],
+            18,
+            (255,255,255,220),
+            (70,90,110,220),
             2,
         )
-
         lines = wrap_text(
-            od,
+            bd,
             "Lesson: " + str(story.get("lesson","")),
             LESSON_FONT,
-            WIDTH-190,
+            WIDTH-150,
         )
-
-        y = 604
+        y = 590
         for line in lines[:2]:
-            text_center(
-                od,
-                line,
-                WIDTH/2,
-                y,
-                LESSON_FONT,
-                (40,50,65,alpha),
-            )
-            y += 28
-
-        frame = Image.alpha_composite(
-            frame.convert("RGBA"), overlay
-        ).convert("RGB")
+            text_center(bd, line, WIDTH/2, y, LESSON_FONT, (40,50,65,220))
+            y += 27
+        frame = Image.alpha_composite(frame.convert("RGBA"), badge).convert("RGB")
 
     return frame
 
@@ -998,7 +1098,7 @@ def create_subtitles(story, duration):
         return
 
     # Short readable chunks for preschool viewers.
-    chunk_size = 7
+    chunk_size = 5
     groups = [
         words[i:i+chunk_size]
         for i in range(0, len(words), chunk_size)
@@ -1030,7 +1130,7 @@ def create_subtitles(story, duration):
 
 def render_video(story, duration):
     print("==============================================")
-    print("NOBINEST 2D MOTION RENDERER v4")
+    print("NOBINEST 2D MOTION RENDERER v6")
     print("==============================================")
     print(f"Resolution : {WIDTH}x{HEIGHT}")
     print(f"FPS        : {FPS}")
@@ -1047,10 +1147,10 @@ def render_video(story, duration):
     subtitle_filter = (
         f"subtitles='{subtitle_path}':force_style="
         "'FontName=DejaVu Sans,"
-        "FontSize=21,"
+        "FontSize=18,"
         "Bold=1,"
         "Alignment=2,"
-        "MarginV=34,"
+        "MarginV=28,"
         "Outline=2,"
         "Shadow=1'"
     )
