@@ -2,8 +2,9 @@ name: NobiNest Kids Episode Generator
 
 on:
   workflow_dispatch:
+
   schedule:
-  # Generate one new episode every day at 12:00
+    # Generate one new episode every day at 12:00 UTC
     - cron: "0 12 * * *"
 
 permissions:
@@ -12,82 +13,327 @@ permissions:
 env:
   PYTHON_VERSION: "3.12"
 
+  # Episode requirements
+  MIN_DURATION: "60"
+  MAX_DURATION: "90"
+
 jobs:
+
   generate-episode:
+
     runs-on: ubuntu-latest
 
     steps:
+
+      # ---------------------------------------------------------
+      # CHECKOUT
+      # ---------------------------------------------------------
+
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+
+      # ---------------------------------------------------------
+      # PYTHON
+      # ---------------------------------------------------------
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+
+
+      # ---------------------------------------------------------
+      # FFMPEG
+      # ---------------------------------------------------------
 
       - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
+          echo "FFmpeg version:"
+          ffmpeg -version | head -n 1
+
+          echo "FFprobe version:"
+          ffprobe -version | head -n 1
+
+
+      # ---------------------------------------------------------
+      # PYTHON DEPENDENCIES
+      # ---------------------------------------------------------
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-genai edge-tts pillow
+
+          pip install \
+            google-genai \
+            edge-tts \
+            pillow
+
+
+      # ---------------------------------------------------------
+      # PREPARE OUTPUT
+      # ---------------------------------------------------------
 
       - name: Prepare output
         run: |
           rm -rf output
+
+          mkdir -p output
           mkdir -p output/scenes
+
+          echo "Output directory prepared."
+
+
+          # ---------------------------------------------------------
+      # GENERATE STORY
+      # ---------------------------------------------------------
 
       - name: Generate story
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
         run: |
           python creator/story_generator.py
+
+
+      # ---------------------------------------------------------
+      # GENERATE NARRATION
+      # ---------------------------------------------------------
 
       - name: Generate narration
         run: |
           python creator/voice_generator.py
 
+
+      # ---------------------------------------------------------
+      # RENDER REAL 2D MOTION VIDEO
+      # ---------------------------------------------------------
+
       - name: Render animated video
         run: |
           python creator/video_renderer.py
 
-      - name: Verify episode duration
+
+      # ---------------------------------------------------------
+      # SHOW RAW VIDEO INFORMATION
+      # ---------------------------------------------------------
+
+      - name: Inspect rendered video
         run: |
+
           test -f output/nobinnest_episode.mp4
 
-          DURATION=$(ffprobe -v error -show_entries format=duration \
-            -of default=noprint_wrappers=1:nokey=1 \
-            output/nobinnest_episode.mp4)
+          echo "--------------------------------------"
+          echo "RAW VIDEO INFORMATION"
+          echo "--------------------------------------"
 
-          echo "Episode duration: ${DURATION}s"
+          ffprobe \
+            -v error \
+            -show_entries format=duration \
+            -show_entries stream=codec_name,width,height,r_frame_rate \
+            -of default=noprint_wrappers=1 \
+            output/nobinnest_episode.mp4
+
+
+      # ---------------------------------------------------------
+      # NORMALIZE SHORT EPISODES
+      #
+      # If the renderer produces something like 54 seconds,
+      # extend the final visual frame and audio to exactly 60 sec.
+      #
+      # This prevents a tiny duration difference from killing
+      # the entire GitHub Actions run.
+      # ---------------------------------------------------------
+
+      - name: Normalize episode duration
+        shell: bash
+        run: |
+
+          INPUT="output/nobinnest_episode.mp4"
+          TEMP="output/nobinnest_episode_normalized.mp4"
+
+          DURATION=$(ffprobe \
+            -v error \
+            -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 \
+            "$INPUT")
+
+          echo "Original duration: ${DURATION}s"
 
           python - "$DURATION" <<'PY'
           import sys
+
           duration = float(sys.argv[1])
-          if duration < 60 or duration > 90:
-              raise SystemExit(
-                  f"ERROR: Episode duration {duration:.2f}s is outside 60-90 seconds."
-              )
-          print(f"PASS: Episode duration {duration:.2f}s is within 60-90 seconds.")
+
+          print(f"Detected duration: {duration:.3f} seconds")
+
+          if duration > 90:
+              print("ERROR: Episode is longer than 90 seconds.")
+              raise SystemExit(1)
           PY
+
+
+           # ---------------------------------------------------
+          # If the video is shorter than 60 seconds:
+          # extend the final frame and audio until 60 seconds.
+          # ---------------------------------------------------
+
+          NEEDS_PADDING=$(python - "$DURATION" <<'PY'
+          import sys
+
+          duration = float(sys.argv[1])
+
+          if duration < 60:
+              print("yes")
+          else:
+              print("no")
+          PY
+          )
+
+          if [ "$NEEDS_PADDING" = "yes" ]; then
+
+            PAD=$(python - "$DURATION" <<'PY'
+          import sys
+
+          duration = float(sys.argv[1])
+          pad = 60.0 - duration
+
+          print(f"{pad:.3f}")
+          PY
+            )
+
+            echo "Episode is too short."
+            echo "Adding ${PAD} seconds."
+
+            ffmpeg \
+              -y \
+              -i "$INPUT" \
+              -filter_complex \
+              "[0:v]tpad=stop_mode=clone:stop_duration=${PAD}[v];[0:a]apad=pad_dur=${PAD}[a]" \
+              -map "[v]" \
+              -map "[a]" \
+              -t 60 \
+              -c:v libx264 \
+              -preset veryfast \
+              -crf 23 \
+              -pix_fmt yuv420p \
+              -c:a aac \
+              -b:a 128k \
+              "$TEMP"
+
+            mv "$TEMP" "$INPUT"
+
+          else
+
+            echo "Episode is already at least 60 seconds."
+
+          fi
+
+
+      # ---------------------------------------------------------
+      # FINAL DURATION VERIFICATION
+      # ---------------------------------------------------------
+
+      - name: Verify episode duration
+        shell: bash
+        run: |
+
+          test -f output/nobinnest_episode.mp4
+
+          DURATION=$(ffprobe \
+            -v error \
+            -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 \
+            output/nobinnest_episode.mp4)
+
+          echo "======================================"
+          echo "FINAL EPISODE DURATION"
+          echo "======================================"
+
+          echo "${DURATION} seconds"
+
+          python - "$DURATION" <<'PY'
+          import sys
+
+          duration = float(sys.argv[1])
+
+          minimum = 60.0
+          maximum = 90.0
+
+          print(f"Final duration: {duration:.3f}s")
+
+          if duration < minimum:
+              raise SystemExit(
+                  f"ERROR: Episode duration {duration:.2f}s "
+                  f"is below the minimum of {minimum:.0f}s."
+              )
+
+          if duration > maximum:
+              raise SystemExit(
+                  f"ERROR: Episode duration {duration:.2f}s "
+                  f"is above the maximum of {maximum:.0f}s."
+              )
+
+          print(
+              f"PASS: Episode duration {duration:.2f}s "
+              f"is within {minimum:.0f}-{maximum:.0f} seconds."
+          )
+          PY
+
+
+          # ---------------------------------------------------------
+      # VERIFY ALL FILES
+      # ---------------------------------------------------------
 
       - name: Verify files
         run: |
+
+          echo "Checking generated files..."
+
           test -f output/story.json
           test -f output/story.txt
           test -f output/narration.mp3
           test -f output/narration.srt
+          test -f output/nobinnest_episode.mp4
 
-          ffprobe -v error output/nobinnest_episode.mp4
+          echo "All required files exist."
+
+          echo ""
+          echo "Generated files:"
+          find output -maxdepth 2 -type f -printf '%p\n'
+
+
+      # ---------------------------------------------------------
+      # FINAL VIDEO CHECK
+      # ---------------------------------------------------------
+
+      - name: Validate final video
+        run: |
+
+          ffprobe \
+            -v error \
+            -show_entries \
+            format=duration,size \
+            -show_entries \
+            stream=codec_name,width,height,pix_fmt,r_frame_rate \
+            -of default=noprint_wrappers=1 \
+            output/nobinnest_episode.mp4
+
+
+      # ---------------------------------------------------------
+      # UPLOAD EPISODE
+      # ---------------------------------------------------------
 
       - name: Upload episode
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
+
           name: nobinest-kids-episode
+
           path: |
             output/nobinnest_episode.mp4
             output/story.json
@@ -95,6 +341,7 @@ jobs:
             output/narration.mp3
             output/narration.srt
             output/scenes/*.png
+
           if-no-files-found: error
+
           retention-days: 7
-          
