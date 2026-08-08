@@ -4,11 +4,14 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Runs every day at 12:00 UTC
+    # Generate one new episode every day at 12:00 UTC
     - cron: "0 12 * * *"
 
 permissions:
   contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
 
 jobs:
   generate-episode:
@@ -17,27 +20,28 @@ jobs:
 
     steps:
 
-      # ----------------------------------------
+      # ==========================================
       # CHECKOUT
-      # ----------------------------------------
+      # ==========================================
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
 
-      # ----------------------------------------
+      # ==========================================
       # PYTHON
-      # ----------------------------------------
+      # ==========================================
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
 
-      # ----------------------------------------
+      # ==========================================
       # INSTALL FFMPEG
-      # ----------------------------------------
+      # ==========================================
 
       - name: Install FFmpeg
         run: |
@@ -45,30 +49,55 @@ jobs:
           sudo apt-get install -y ffmpeg
 
 
-      # ----------------------------------------
+      # ==========================================
+      # VERIFY ENVIRONMENT
+      # ==========================================
+
+      - name: Verify environment
+        run: |
+          echo "Python:"
+          python --version
+
+          echo ""
+          echo "FFmpeg:"
+          ffmpeg -version | head -n 1
+
+          echo ""
+          echo "FFprobe:"
+          ffprobe -version | head -n 1
+
+
+      # ==========================================
       # INSTALL PYTHON DEPENDENCIES
-      # ----------------------------------------
+      # ==========================================
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-genai edge-tts pillow
+
+          pip install \
+            google-genai \
+            edge-tts \
+            pillow
 
 
-      # ----------------------------------------
+      # ==========================================
       # PREPARE OUTPUT
-      # ----------------------------------------
+      # ==========================================
 
       - name: Prepare output directory
         run: |
           rm -rf output
+
           mkdir -p output
           mkdir -p output/scenes
 
+          echo "Output directory prepared."
 
-      # ----------------------------------------
+
+      # ==========================================
       # GENERATE STORY
-      # ----------------------------------------
+      # ==========================================
 
       - name: Generate children's story
         env:
@@ -77,47 +106,122 @@ jobs:
           python creator/story_generator.py
 
 
-      # ----------------------------------------
+      # ==========================================
+      # VERIFY STORY
+      # ==========================================
+
+      - name: Verify generated story
+        run: |
+          test -f output/story.json
+          test -f output/story.txt
+
+          echo "Story files:"
+          ls -lh output/story.json
+          ls -lh output/story.txt
+
+
+      # ==========================================
       # GENERATE NARRATION
-      # ----------------------------------------
+      # ==========================================
 
       - name: Generate narration
         run: |
           python creator/voice_generator.py
 
 
-      # ----------------------------------------
-      # GENERATE VIDEO
-      # ----------------------------------------
+      # ==========================================
+      # VERIFY AUDIO
+      # ==========================================
+
+      - name: Verify narration
+        run: |
+          test -f output/narration.mp3
+
+          echo "Narration created:"
+          ls -lh output/narration.mp3
+
+          echo ""
+          echo "Audio information:"
+
+          ffprobe \
+            -v error \
+            -show_entries format=duration,size \
+            -of default=noprint_wrappers=1 \
+            output/narration.mp3
+
+
+      # ==========================================
+      # RENDER ANIMATED VIDEO
+      # ==========================================
 
       - name: Render children's video
         run: |
           python creator/video_renderer.py
 
 
-      # ----------------------------------------
-      # CHECK FILES
-      # ----------------------------------------
+      # ==========================================
+      # VERIFY VIDEO
+      # ==========================================
 
-      - name: Check generated files
+      - name: Verify generated video
         run: |
-          echo "Generated files:"
-          find output -maxdepth 2 -type f -printf "%p %s bytes\n"
+
+          test -f output/nobinnest_episode.mp4
+
+          echo "=========================================="
+          echo "VIDEO CREATED"
+          echo "=========================================="
+
+          ls -lh output/nobinnest_episode.mp4
 
           echo ""
           echo "Video information:"
-          ffprobe -v error \
-            -show_entries format=duration,size \
+
+          ffprobe \
+            -v error \
+            -show_entries \
+            format=duration,size:stream=width,height,r_frame_rate,codec_name \
             -of default=noprint_wrappers=1 \
             output/nobinnest_episode.mp4
 
 
-      # ----------------------------------------
+      # ==========================================
+      # VERIFY SUBTITLES
+      # ==========================================
+
+      - name: Verify subtitles
+        run: |
+
+          test -f output/narration.srt
+
+          echo "Subtitle file created:"
+          ls -lh output/narration.srt
+
+
+      # ==========================================
+      # SHOW ALL OUTPUT
+      # ==========================================
+
+      - name: Show generated files
+        run: |
+
+          echo "=========================================="
+          echo "GENERATED EPISODE ASSETS"
+          echo "=========================================="
+
+          find output \
+            -maxdepth 2 \
+            -type f \
+            -printf "%p %s bytes\n" \
+            | sort
+
+
+      # ==========================================
       # UPLOAD EPISODE
-      # ----------------------------------------
+      # ==========================================
 
       - name: Upload episode
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nobinest-kids-episode
           path: |
