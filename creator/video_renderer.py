@@ -452,7 +452,7 @@ def draw_kiki(draw, x, y, scale=1.0, phase=0.0, flight=0.0,
     draw.ellipse(
         [x+5*s, y+183*s, x+46*s, y+210*s],
         fill=orange,
-        )
+                )
 
 
 # ============================================================
@@ -539,6 +539,113 @@ def draw_background(draw, scene, t, camera_x):
             [fx-8+sway, fy-8, fx+8+sway, fy+8],
             fill=petal,
         )
+
+
+# ============================================================
+# STORY-AWARE OBJECTS AND ACTION CHOREOGRAPHY
+# ============================================================
+
+def draw_apple(draw, x, y, scale=1.0, bob=0.0):
+    s = scale
+    y += bob
+    red = (220, 55, 55)
+    dark_red = (170, 40, 40)
+    green = (72, 150, 72)
+    draw.ellipse([x-30*s, y-25*s, x+30*s, y+27*s], fill=red)
+    draw.ellipse([x-2*s, y-30*s, x+31*s, y+22*s], fill=red)
+    draw.line([(x+2*s, y-27*s), (x+8*s, y-43*s)], fill=dark_red, width=max(2, int(5*s)))
+    draw.ellipse([x+7*s, y-45*s, x+30*s, y-33*s], fill=green)
+
+def draw_tree(draw, x, y, scale=1.0):
+    s = scale
+    trunk = (125, 82, 48)
+    leaves = (78, 158, 80)
+    draw.rectangle([x-28*s, y, x+28*s, y+180*s], fill=trunk)
+    for dx, dy, r in [(-70,0,72),(0,-35,90),(72,0,72),(0,35,80)]:
+        draw.ellipse([x+(dx-r)*s, y+(dy-r)*s,
+                      x+(dx+r)*s, y+(dy+r)*s], fill=leaves)
+
+def draw_basket(draw, x, y, scale=1.0, apples=0):
+    s = scale
+    brown = (165, 105, 55)
+    light = (205, 145, 82)
+    draw.rounded_rectangle([x-80*s,y-5*s,x+80*s,y+65*s],
+                           radius=int(14*s), fill=light)
+    draw.arc([x-65*s,y-55*s,x+65*s,y+35*s], 180, 360,
+             fill=brown, width=max(3,int(7*s)))
+    for i in range(apples):
+        draw_apple(draw, x+(i-(apples-1)/2)*42*s, y+12*s, .42*s)
+
+def draw_story_objects(draw, story, scene, t):
+    """Interpret common preschool nouns from the generated visual descriptions."""
+    descriptions = " ".join(
+        str(s.get("visual_description",""))
+        for s in story.get("scenes", [])
+    ).lower()
+    lesson = str(story.get("lesson","")).lower()
+    all_text = descriptions + " " + lesson
+
+    # Keep the important object visible in the same visual world as the characters.
+    if "tree" in all_text:
+        draw_tree(draw, 1080, 245, 0.82)
+
+    if "apple" in all_text:
+        # Three apples are introduced on the branch in scene 1 and collected afterward.
+        branch_y = 265
+        apple_xs = [1010, 1080, 1150]
+        visible = 3
+        if scene == 2:
+            visible = 2 if t > 1.0 else 3
+        elif scene >= 3:
+            visible = 1 if scene == 3 and t < 2.0 else 0
+
+        # Branch
+        draw.line([(960, branch_y+20),(1190,branch_y+20)],
+                  fill=(105,70,42), width=10)
+
+        for i, x in enumerate(apple_xs):
+            if i < visible:
+                draw_apple(draw, x, branch_y-15, 0.58,
+                           5*math.sin(t*2+i))
+
+    if "basket" in all_text:
+        apples = 0
+        if scene >= 2:
+            if scene == 2:
+                apples = 1 if t < 3.5 else 2
+            else:
+                apples = 3
+        draw_basket(draw, 565, 465, 0.72, apples)
+
+    # Simple number badges only when the lesson is actually about counting.
+    if any(w in lesson for w in ("count", "number", "one", "two", "three")):
+        count = 3 if scene >= 3 else (1 if scene == 2 else 0)
+        for i in range(count):
+            x = 430 + i*65
+            y = 445 + 7*math.sin(t*2+i)
+            draw.ellipse([x-20,y-20,x+20,y+20], fill=(245,180,70))
+            text_center(draw, str(i+1), x, y-13,
+                        get_font(21, True), (70,70,90))
+
+def draw_action_effects(draw, story, scene, t):
+    """Small effects tied to actions rather than random decoration."""
+    descriptions = str(
+        story.get("scenes", [])[scene-1].get("visual_description","")
+    ).lower() if story.get("scenes") else ""
+
+    if any(w in descriptions for w in ("pick", "picks", "picking", "reach", "reaches")):
+        for i in range(4):
+            a = t*4 + i*1.57
+            x = 540 + math.cos(a)*34
+            y = 355 + math.sin(a)*22
+            draw.ellipse([x-3,y-3,x+3,y+3], fill=(255,235,100))
+
+    if any(w in descriptions for w in ("flies", "flies up", "flying", "flies down")):
+        for i in range(3):
+            x = 875 + i*16 + 10*math.sin(t*3+i)
+            y = 315 + i*15
+            draw.arc([x-12,y-8,x+12,y+8], 190, 350,
+                     fill=(255,255,255), width=2)
 
 
 # ============================================================
@@ -678,13 +785,23 @@ def render_frame(story, scene, t, scene_duration, total_duration):
     camera_x, zoom = camera_state(scene, t)
 
     draw_background(draw, scene, t, camera_x)
-    draw_lesson_object(
-        draw,
-        story.get("lesson", ""),
-        scene,
-        t,
-        focus=int(t*1.2),
+
+    # Story-specific props are drawn first so characters can interact with them.
+    draw_story_objects(draw, story, scene, t)
+    lesson = str(story.get("lesson", "")).lower()
+    concrete_story = any(
+        w in (" ".join(str(s.get("visual_description","")) for s in story.get("scenes", []))).lower()
+        for w in ("apple", "basket", "tree", "ball", "flower", "book", "toy", "cup", "leaf")
     )
+    if not concrete_story:
+        draw_lesson_object(
+            draw,
+            story.get("lesson", ""),
+            scene,
+            t,
+            focus=int(t*1.2),
+        )
+    draw_action_effects(draw, story, scene, t)
     draw_particles(draw, t, scene)
 
     positions = character_positions(scene, t, scene_duration)
@@ -1029,7 +1146,7 @@ def render_video(story, duration):
         print(stderr)
         raise RuntimeError(
             "FFmpeg closed the video pipe unexpectedly."
-        )
+    )
 
 
 # ============================================================
