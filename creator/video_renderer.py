@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -9,11 +10,22 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 # ============================================================
-# NOBINEST 2D MOTION RENDERER v6 v6
+# NOBINEST SCENE-AWARE 2D MOTION VIDEO RENDERER
 # ============================================================
-# Fully procedural 2D animation.
+# This renderer reads BOTH:
+#   story["lesson"]
+#   story["scenes"][n]["visual_description"]
 #
-# No paid image/video API is required.
+# It does not treat the four scenes as identical.
+#
+# The visual description is converted into a scene plan that
+# controls:
+#   - character movement
+#   - educational objects
+#   - object movement
+#   - camera motion
+#   - scene-specific actions
+#   - simple interactions
 #
 # Input:
 #   output/story.json
@@ -24,6 +36,7 @@ from PIL import Image, ImageDraw, ImageFont
 #   output/narration.srt
 # ============================================================
 
+
 OUTPUT_DIR = Path("output")
 STORY_FILE = OUTPUT_DIR / "story.json"
 AUDIO_FILE = OUTPUT_DIR / "narration.mp3"
@@ -33,10 +46,7 @@ SRT_FILE = OUTPUT_DIR / "narration.srt"
 WIDTH = 1280
 HEIGHT = 720
 FPS = 24
-
 GROUND_Y = 525
-MAX_DURATION = 90.0
-MIN_DURATION = 60.0
 
 
 # ============================================================
@@ -44,14 +54,20 @@ MIN_DURATION = 60.0
 # ============================================================
 
 def get_font(size, bold=False):
-    paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ]
+    candidates = []
 
-    for path in paths:
+    if bold:
+        candidates += [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
+    else:
+        candidates += [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ]
+
+    for path in candidates:
         if os.path.exists(path):
             return ImageFont.truetype(path, size)
 
@@ -59,63 +75,55 @@ def get_font(size, bold=False):
 
 
 TITLE_FONT = get_font(34, True)
-LESSON_FONT = get_font(22, True)
-SMALL_FONT = get_font(18, True)
+LESSON_FONT = get_font(21, True)
+OBJECT_FONT = get_font(32, True)
+SMALL_FONT = get_font(18, False)
 
 
 # ============================================================
-# MATH / DRAW HELPERS
+# BASIC HELPERS
 # ============================================================
 
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-
-def smoothstep(t):
-    t = clamp(t, 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
+def clamp(v, low, high):
+    return max(low, min(high, v))
 
 
 def lerp(a, b, t):
     return a + (b - a) * t
 
 
-def ease_out(t):
+def ease(t):
     t = clamp(t, 0.0, 1.0)
-    return 1.0 - (1.0 - t) ** 3
+    return t * t * (3.0 - 2.0 * t)
 
 
 def rounded(draw, box, radius, fill, outline=None, width=1):
     draw.rounded_rectangle(
         box,
-        radius=int(radius),
+        radius=radius,
         fill=fill,
         outline=outline,
-        width=max(1, int(width)),
+        width=width,
     )
 
 
-def text_center(draw, text, cx, y, font, fill):
-    box = draw.textbbox((0, 0), text, font=font)
-    draw.text(
-        (cx - (box[2] - box[0]) / 2, y),
-        text,
-        font=font,
-        fill=fill,
-    )
+def draw_center(draw, text, cx, y, font, fill):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0]
+    draw.text((cx - w / 2, y), text, font=font, fill=fill)
 
 
-def wrap_text(draw, text, font, width):
+def wrap_text(draw, text, font, max_width):
     words = str(text).split()
     lines = []
     current = ""
 
     for word in words:
-        test = word if not current else current + " " + word
-        box = draw.textbbox((0, 0), test, font=font)
+        candidate = word if not current else current + " " + word
+        bbox = draw.textbbox((0, 0), candidate, font=font)
 
-        if box[2] - box[0] <= width:
-            current = test
+        if bbox[2] - bbox[0] <= max_width:
+            current = candidate
         else:
             if current:
                 lines.append(current)
@@ -127,90 +135,54 @@ def wrap_text(draw, text, font, width):
     return lines
 
 
-def rotate_point(px, py, cx, cy, angle):
-    s = math.sin(angle)
-    c = math.cos(angle)
-    dx = px - cx
-    dy = py - cy
-    return (
-        cx + dx * c - dy * s,
-        cy + dx * s + dy * c,
-    )
+def alpha_layer(base, overlay):
+    return Image.alpha_composite(
+        base.convert("RGBA"),
+        overlay.convert("RGBA"),
+    ).convert("RGB")
 
 
-def draw_rotated_ellipse(draw, box, angle, fill):
-    x1, y1, x2, y2 = box
-    cx = (x1 + x2) / 2
-    cy = (y1 + y2) / 2
-    rx = (x2 - x1) / 2
-    ry = (y2 - y1) / 2
-
-    points = []
-    for i in range(24):
-        a = 2 * math.pi * i / 24
-        px = cx + rx * math.cos(a)
-        py = cy + ry * math.sin(a)
-        points.append(rotate_point(px, py, cx, cy, angle))
-
-    draw.polygon(points, fill=fill)
-
-
-def draw_star(draw, cx, cy, radius, fill):
+def star_points(cx, cy, radius):
     points = []
     for i in range(10):
-        a = -math.pi / 2 + i * math.pi / 5
-        r = radius if i % 2 == 0 else radius * 0.42
-        points.append((cx + math.cos(a) * r, cy + math.sin(a) * r))
-    draw.polygon(points, fill=fill)
+        angle = -math.pi / 2 + i * math.pi / 5
+        r = radius if i % 2 == 0 else radius * 0.45
+        points.append(
+            (
+                cx + math.cos(angle) * r,
+                cy + math.sin(angle) * r,
+            )
+        )
+    return points
 
 
 # ============================================================
 # CHARACTER DRAWING
 # ============================================================
 
-def draw_bobo(draw, x, y, scale=1.0, phase=0.0, wave=0.0,
-              facing=1.0, gesture=0.0):
+def draw_bobo(draw, x, y, scale=1.0, bounce=0.0, wave=0.0):
     s = scale
-    fur = (154, 96, 57)
-    fur_light = (184, 124, 76)
-    dark = (92, 55, 35)
-    muzzle = (222, 169, 113)
+    y += bounce
+
+    fur = (156, 98, 58)
+    fur_light = (181, 119, 72)
+    dark = (95, 58, 38)
+    muzzle = (218, 165, 111)
     yellow = (248, 207, 45)
-
-    walk = math.sin(phase)
-    body_y = y + 72 * s
-
-    # shadow
-    shadow_w = 62 * s * (1.0 - 0.08 * abs(walk))
-    draw.ellipse(
-        [x - shadow_w, GROUND_Y - 6, x + shadow_w, GROUND_Y + 12],
-        fill=(86, 145, 78),
-    )
-
-    # legs
-    leg_shift = 8 * walk * s
-    draw.ellipse(
-        [x - 62*s + leg_shift, y + 205*s,
-         x - 5*s + leg_shift, y + 250*s],
-        fill=dark,
-    )
-    draw.ellipse(
-        [x + 5*s - leg_shift, y + 205*s,
-         x + 62*s - leg_shift, y + 250*s],
-        fill=dark,
-    )
 
     # body
     draw.ellipse(
-        [x - 64*s, body_y, x + 64*s, y + 230*s],
+        [x - 64*s, y + 72*s, x + 64*s, y + 230*s],
         fill=fur,
     )
 
     # ears
-    draw.ellipse([x - 68*s, y - 2*s, x - 5*s, y + 62*s], fill=fur)
-    draw.ellipse([x + 5*s, y - 2*s, x + 68*s, y + 62*s], fill=fur)
-    draw.ellipse([x - 55*s, y + 8*s, x - 18*s, y + 45*s], fill=fur_light)
-    draw.ellipse([x + 18*s, y + 8*s, x + 55*s, y + 45*s], fill=fur_light)
+    for ex in (-38, 38):
+        draw.ellipse(
+            [x + (ex-32)*s, y - 2*s,
+             x + (ex+32)*s, y + 62*s],
+            fill=fur,
+        )
 
     # head
     draw.ellipse(
@@ -219,240 +191,260 @@ def draw_bobo(draw, x, y, scale=1.0, phase=0.0, wave=0.0,
     )
 
     # eyes
-    eye_y = y + 76*s
     for ex in (-30, 30):
         draw.ellipse(
-            [x + (ex-9)*s, eye_y-9*s,
-             x + (ex+9)*s, eye_y+9*s],
-            fill=(28, 28, 28),
+            [x + (ex-9)*s, y + 67*s,
+             x + (ex+9)*s, y + 85*s],
+            fill=(30, 30, 30),
         )
         draw.ellipse(
-            [x + (ex-4)*s, eye_y-6*s,
-             x + (ex+1)*s, eye_y-1*s],
+            [x + (ex-4)*s, y + 69*s,
+             x + (ex+1)*s, y + 74*s],
             fill="white",
         )
 
-    # muzzle / nose
+    # muzzle
     draw.ellipse(
         [x - 32*s, y + 94*s, x + 32*s, y + 134*s],
         fill=muzzle,
     )
     draw.ellipse(
-        [x - 10*s, y + 101*s, x + 10*s, y + 116*s],
+        [x - 10*s, y + 101*s,
+         x + 10*s, y + 116*s],
         fill=dark,
     )
 
-    # smile
     draw.arc(
-        [x - 20*s, y + 105*s, x + 20*s, y + 137*s],
+        [x - 20*s, y + 105*s,
+         x + 20*s, y + 137*s],
         15, 165,
         fill=dark,
-        width=max(2, int(3*s)),
+        width=max(1, int(3*s)),
     )
 
     # arms
-    left_angle = -0.15 + 0.18 * math.sin(phase + 1)
-    right_angle = -0.35 + 0.45 * math.sin(wave) + gesture
-
-    draw_rotated_ellipse(
-        draw,
-        [x - 102*s, y + 112*s, x - 48*s, y + 182*s],
-        left_angle,
-        fur,
+    draw.ellipse(
+        [x - 97*s, y + 115*s,
+         x - 50*s, y + 177*s],
+        fill=fur,
     )
 
-    draw_rotated_ellipse(
-        draw,
-        [x + 42*s, y + 105*s, x + 104*s, y + 178*s],
-        right_angle,
-        fur,
+    hand_x = x + (82 + 16*math.sin(wave))*s
+    hand_y = y + (111 - 32*math.cos(wave))*s
+
+    draw.line(
+        [(x + 50*s, y + 130*s), (hand_x, hand_y)],
+        fill=fur,
+        width=max(10, int(34*s)),
+    )
+    draw.ellipse(
+        [hand_x - 19*s, hand_y - 19*s,
+         hand_x + 19*s, hand_y + 19*s],
+        fill=fur,
     )
 
     # scarf
     draw.rectangle(
-        [x - 66*s, y + 145*s, x + 66*s, y + 176*s],
+        [x - 66*s, y + 145*s,
+         x + 66*s, y + 176*s],
         fill=yellow,
     )
-    scarf_wave = 10 * math.sin(phase * 0.7)
     draw.polygon(
         [
-            (x + 25*s, y + 168*s),
-            (x + (78 + scarf_wave)*s, y + 205*s),
+            (x + 28*s, y + 168*s),
+            (x + 80*s, y + (210 + 8*math.sin(wave))*s),
             (x + 55*s, y + 174*s),
         ],
         fill=yellow,
     )
 
+    # feet
+    draw.ellipse(
+        [x - 67*s, y + 205*s,
+         x - 4*s, y + 248*s],
+        fill=dark,
+    )
+    draw.ellipse(
+        [x + 4*s, y + 205*s,
+         x + 67*s, y + 248*s],
+        fill=dark,
+    )
 
-def draw_mimi(draw, x, y, scale=1.0, phase=0.0, wave=0.0,
-              gesture=0.0):
+
+def draw_mimi(draw, x, y, scale=1.0, bounce=0.0, wave=0.0):
     s = scale
+    y += bounce
+
     white = (250, 250, 250)
-    outline = (214, 214, 214)
+    outline = (215, 215, 215)
     pink = (250, 165, 185)
     purple = (128, 78, 175)
     dark = (40, 40, 40)
 
-    hop = max(0.0, math.sin(phase)) * 10 * s
-    y -= hop
-
-    # shadow
-    shadow = 58 * s * (1.0 - hop / (20*s))
-    draw.ellipse(
-        [x-shadow, GROUND_Y-5, x+shadow, GROUND_Y+10],
-        fill=(86, 145, 78),
-    )
-
     # backpack
     rounded(
         draw,
-        [x + 38*s, y + 112*s, x + 94*s, y + 193*s],
-        15*s,
+        [x + 38*s, y + 112*s,
+         x + 94*s, y + 193*s],
+        int(15*s),
         purple,
     )
 
     # ears
+    for side in (-1, 1):
+        draw.ellipse(
+            [x + (side*5-58)*s, y - 102*s,
+             x + (side*5-5)*s, y + 48*s],
+            fill=white,
+            outline=outline,
+            width=max(1, int(2*s)),
+        )
+
     draw.ellipse(
-        [x - 58*s, y - 102*s, x - 5*s, y + 48*s],
-        fill=white, outline=outline, width=max(1, int(2*s)),
-    )
-    draw.ellipse(
-        [x + 5*s, y - 102*s, x + 58*s, y + 48*s],
-        fill=white, outline=outline, width=max(1, int(2*s)),
-    )
-    draw.ellipse(
-        [x - 43*s, y - 80*s, x - 19*s, y + 27*s],
+        [x - 43*s, y - 80*s,
+         x - 19*s, y + 27*s],
         fill=pink,
     )
     draw.ellipse(
-        [x + 19*s, y - 80*s, x + 43*s, y + 27*s],
+        [x + 19*s, y - 80*s,
+         x + 43*s, y + 27*s],
         fill=pink,
     )
 
     # body
     draw.ellipse(
-        [x - 62*s, y + 88*s, x + 62*s, y + 238*s],
-        fill=white, outline=outline, width=max(1, int(2*s)),
+        [x - 62*s, y + 88*s,
+         x + 62*s, y + 238*s],
+        fill=white,
+        outline=outline,
+        width=max(1, int(2*s)),
     )
 
     # head
     draw.ellipse(
-        [x - 72*s, y - 2*s, x + 72*s, y + 140*s],
-        fill=white, outline=outline, width=max(1, int(2*s)),
+        [x - 72*s, y - 2*s,
+         x + 72*s, y + 140*s],
+        fill=white,
+        outline=outline,
+        width=max(1, int(2*s)),
     )
 
     # eyes
-    eye_y = y + 65*s
     for ex in (-29, 29):
         draw.ellipse(
-            [x+(ex-8)*s, eye_y-8*s,
-             x+(ex+8)*s, eye_y+8*s],
+            [x + (ex-8)*s, y + 57*s,
+             x + (ex+8)*s, y + 73*s],
             fill=dark,
         )
 
-    # nose
     draw.ellipse(
-        [x-9*s, y+80*s, x+9*s, y+95*s],
+        [x - 9*s, y + 80*s,
+         x + 9*s, y + 95*s],
         fill=pink,
     )
 
-    # smile
     draw.arc(
-        [x-19*s, y+86*s, x+19*s, y+120*s],
+        [x - 19*s, y + 86*s,
+         x + 19*s, y + 120*s],
         10, 170,
         fill=dark,
-        width=max(2, int(2*s)),
+        width=max(1, int(2*s)),
     )
 
     # arms
-    arm = 0.2 * math.sin(wave) + gesture
-    draw_rotated_ellipse(
-        draw,
-        [x-92*s, y+110*s, x-42*s, y+180*s],
-        -0.25-arm,
-        white,
+    left_y = y + (125 + 12*math.sin(wave))*s
+    right_y = y + (125 - 12*math.sin(wave))*s
+
+    draw.line(
+        [(x - 48*s, y + 130*s),
+         (x - 85*s, left_y)],
+        fill=white,
+        width=max(10, int(30*s)),
     )
-    draw_rotated_ellipse(
-        draw,
-        [x+42*s, y+105*s, x+92*s, y+180*s],
-        0.25+arm,
-        white,
+    draw.line(
+        [(x + 48*s, y + 130*s),
+         (x + 85*s, right_y)],
+        fill=white,
+        width=max(10, int(30*s)),
     )
 
     # feet
     draw.ellipse(
-        [x-63*s, y+215*s, x-5*s, y+250*s],
-        fill=white, outline=outline,
+        [x - 63*s, y + 215*s,
+         x - 5*s, y + 250*s],
+        fill=white,
+        outline=outline,
     )
     draw.ellipse(
-        [x+5*s, y+215*s, x+63*s, y+250*s],
-        fill=white, outline=outline,
+        [x + 5*s, y + 215*s,
+         x + 63*s, y + 250*s],
+        fill=white,
+        outline=outline,
     )
 
 
-def draw_kiki(draw, x, y, scale=1.0, phase=0.0, flight=0.0,
-              gesture=0.0):
+def draw_kiki(draw, x, y, scale=1.0, bounce=0.0, flap=0.0):
     s = scale
+    y += bounce
+
     yellow = (252, 221, 50)
     yellow_light = (255, 231, 75)
     blue = (55, 145, 220)
     orange = (242, 132, 35)
     dark = (35, 35, 35)
 
-    flap = math.sin(phase)
-    y += 10 * math.sin(phase * 0.5)
-
-    # wings
-    wing_y = y + (105 - 38*flap) * s
-
     draw.ellipse(
-        [x-108*s, wing_y-35*s, x-28*s, wing_y+55*s],
-        fill=blue,
-    )
-    draw.ellipse(
-        [x+28*s, wing_y-35*s, x+108*s, wing_y+55*s],
-        fill=blue,
-    )
-
-    # body
-    draw.ellipse(
-        [x-60*s, y+45*s, x+60*s, y+205*s],
+        [x - 60*s, y + 45*s,
+         x + 60*s, y + 205*s],
         fill=yellow,
     )
 
-    # head
     draw.ellipse(
-        [x-70*s, y-20*s, x+70*s, y+112*s],
+        [x - 70*s, y - 20*s,
+         x + 70*s, y + 112*s],
         fill=yellow_light,
     )
 
-    # eyes
+    flap_amount = math.sin(flap)
+    wing_y = y + (105 - 35*flap_amount)*s
+
+    draw.ellipse(
+        [x - 105*s, wing_y - 35*s,
+         x - 28*s, wing_y + 55*s],
+        fill=blue,
+    )
+    draw.ellipse(
+        [x + 28*s, wing_y - 35*s,
+         x + 105*s, wing_y + 55*s],
+        fill=blue,
+    )
+
     for ex in (-29, 29):
         draw.ellipse(
-            [x+(ex-9)*s, y+33*s,
-             x+(ex+9)*s, y+51*s],
+            [x + (ex-9)*s, y + 33*s,
+             x + (ex+9)*s, y + 51*s],
             fill=dark,
         )
 
-    # beak
     draw.polygon(
         [
-            (x, y+61*s),
-            (x+52*s, y+77*s),
-            (x, y+94*s),
+            (x, y + 61*s),
+            (x + 52*s, y + 77*s),
+            (x, y + 94*s),
         ],
         fill=orange,
     )
 
-    # feet
     draw.ellipse(
-        [x-46*s, y+183*s, x-5*s, y+210*s],
+        [x - 46*s, y + 183*s,
+         x - 5*s, y + 210*s],
         fill=orange,
     )
     draw.ellipse(
-        [x+5*s, y+183*s, x+46*s, y+210*s],
+        [x + 5*s, y + 183*s,
+         x + 46*s, y + 210*s],
         fill=orange,
-        )
+    )
 
 
 # ============================================================
@@ -468,528 +460,654 @@ SKIES = [
 
 
 def draw_cloud(draw, x, y, scale=1.0):
-    white = (255, 255, 255)
     s = scale
+    white = (255, 255, 255)
 
-    draw.ellipse([x, y+18*s, x+100*s, y+62*s], fill=white)
-    draw.ellipse([x+25*s, y, x+88*s, y+62*s], fill=white)
-    draw.ellipse([x+60*s, y+12*s, x+135*s, y+64*s], fill=white)
+    draw.ellipse(
+        [x, y + 18*s, x + 100*s, y + 62*s],
+        fill=white,
+    )
+    draw.ellipse(
+        [x + 25*s, y, x + 88*s, y + 62*s],
+        fill=white,
+    )
+    draw.ellipse(
+        [x + 60*s, y + 12*s,
+         x + 135*s, y + 64*s],
+        fill=white,
+    )
 
 
-def draw_background(draw, scene, t, camera_x):
-    sky = SKIES[(scene - 1) % len(SKIES)]
+def draw_background(draw, scene_no, t, camera_x):
+    sky = SKIES[(scene_no - 1) % len(SKIES)]
+
     draw.rectangle([0, 0, WIDTH, HEIGHT], fill=sky)
 
-    # sun
-    pulse = 1 + 0.03 * math.sin(t * 1.4)
-    r = 52 * pulse
-    sx = 1090 - camera_x * 0.12
-    sy = 82
-    draw.ellipse([sx-r, sy-r, sx+r, sy+r], fill=(255, 220, 78))
+    pulse = 1 + 0.025 * math.sin(t * 1.2)
+    sun = 105 * pulse
 
-    # clouds
-    for bx, by, sc, speed in [
-        (80, 95, .85, 10),
-        (430, 70, 1.0, 7),
-        (820, 125, .72, 13),
+    draw.ellipse(
+        [1080 - sun/2, 82 - sun/2,
+         1080 + sun/2, 82 + sun/2],
+        fill=(255, 220, 78),
+    )
+
+    for bx, by, scale in [
+        (110, 105, .85),
+        (410, 75, 1.05),
+        (780, 125, .72),
     ]:
-        cx = (bx + t*speed) % (WIDTH+220) - 160
-        draw_cloud(draw, cx - camera_x*0.04, by, sc)
+        x = (bx + t * 12 * scale) % (WIDTH + 180) - 150
+        draw_cloud(
+            draw,
+            x - camera_x * .05,
+            by,
+            scale,
+        )
 
-    # far hills
-    hx = camera_x * 0.08
+    offset = camera_x * .08
+
     draw.polygon(
         [
-            (-100-hx, GROUND_Y),
-            (160-hx, 350),
-            (400-hx, GROUND_Y),
-            (680-hx, 335),
-            (960-hx, GROUND_Y),
-            (1220-hx, 360),
-            (1450-hx, GROUND_Y),
+            (-100-offset, GROUND_Y),
+            (180-offset, 350),
+            (400-offset, GROUND_Y),
+            (680-offset, 335),
+            (950-offset, GROUND_Y),
+            (1200-offset, 365),
+            (1450-offset, GROUND_Y),
         ],
         fill=(155, 205, 145),
     )
 
-    # ground
-    draw.rectangle([0, GROUND_Y, WIDTH, HEIGHT], fill=(123, 190, 103))
+    draw.rectangle(
+        [0, GROUND_Y, WIDTH, HEIGHT],
+        fill=(123, 190, 103),
+    )
 
-    # grass
-    for i in range(-20, WIDTH+40, 35):
-        sway = 5 * math.sin(t*2.3 + i*.08)
-        x = i - (camera_x*.18) % 35
+    for i in range(0, WIDTH + 50, 35):
+        sway = 5 * math.sin(t * 2.2 + i * .08)
+        x = i - (camera_x * .18) % 35
+
         draw.line(
-            [(x, GROUND_Y+22), (x+sway, GROUND_Y+5)],
+            [(x, GROUND_Y + 22),
+             (x + sway, GROUND_Y + 5)],
             fill=(83, 158, 75),
             width=2,
         )
 
-    # flowers
-    for i in range(10):
-        fx = 65 + i*140 - (camera_x*.22) % 140
-        fy = GROUND_Y + 28 + (i%3)*10
-        sway = 3 * math.sin(t*2 + i)
+    for i in range(9):
+        fx = 70 + i * 145 - (camera_x * .25) % 145
+        fy = GROUND_Y + 25 + (i % 3) * 12
+        sway = 3 * math.sin(t * 2 + i)
+
         draw.line(
-            [(fx, fy+30), (fx+sway, fy)],
+            [(fx, fy + 30),
+             (fx + sway, fy)],
             fill=(70, 140, 70),
             width=3,
         )
-        petal = (255, 210, 80) if i % 2 == 0 else (245, 130, 160)
-        draw.ellipse(
-            [fx-8+sway, fy-8, fx+8+sway, fy+8],
-            fill=petal,
+
+        flower_color = (
+            (255, 210, 80)
+            if i % 2 == 0
+            else (245, 130, 160)
         )
 
+        draw.ellipse(
+            [fx - 8 + sway, fy - 8,
+             fx + 8 + sway, fy + 8],
+            fill=flower_color,
+)
 
 
 # ============================================================
-# STORY-AWARE OBJECTS AND ACTION CHOREOGRAPHY
+# SCENE DESCRIPTION UNDERSTANDING
 # ============================================================
 
-def draw_apple(draw, x, y, scale=1.0, bob=0.0):
-    s = scale
-    y += bob
-    red = (220, 55, 55)
-    dark_red = (170, 40, 40)
-    green = (72, 150, 72)
-    draw.ellipse([x-30*s, y-25*s, x+30*s, y+27*s], fill=red)
-    draw.ellipse([x-2*s, y-30*s, x+31*s, y+22*s], fill=red)
-    draw.line([(x+2*s, y-27*s), (x+8*s, y-43*s)], fill=dark_red, width=max(2, int(5*s)))
-    draw.ellipse([x+7*s, y-45*s, x+30*s, y-33*s], fill=green)
+def normalize(text):
+    text = str(text or "").lower()
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
-def draw_tree(draw, x, y, scale=1.0):
-    s = scale
-    trunk = (125, 82, 48)
-    leaves = (78, 158, 80)
-    draw.rectangle([x-28*s, y, x+28*s, y+180*s], fill=trunk)
-    for dx, dy, r in [(-70,0,72),(0,-35,90),(72,0,72),(0,35,80)]:
-        draw.ellipse([x+(dx-r)*s, y+(dy-r)*s,
-                      x+(dx+r)*s, y+(dy+r)*s], fill=leaves)
 
-def draw_basket(draw, x, y, scale=1.0, apples=0):
-    s = scale
-    brown = (165, 105, 55)
-    light = (205, 145, 82)
-    draw.rounded_rectangle([x-80*s,y-5*s,x+80*s,y+65*s],
-                           radius=int(14*s), fill=light)
-    draw.arc([x-65*s,y-55*s,x+65*s,y+35*s], 180, 360,
-             fill=brown, width=max(3,int(7*s)))
-    for i in range(apples):
-        draw_apple(draw, x+(i-(apples-1)/2)*42*s, y+12*s, .42*s)
+def has_any(text, words):
+    return any(word in text for word in words)
 
-def draw_story_objects(draw, story, scene, t):
-    """Interpret common preschool nouns from the generated visual descriptions."""
-    descriptions = " ".join(
-        str(s.get("visual_description",""))
-        for s in story.get("scenes", [])
-    ).lower()
-    lesson = str(story.get("lesson","")).lower()
-    all_text = descriptions + " " + lesson
 
-    # Keep the important object visible in the same visual world as the characters.
-    if "tree" in all_text:
-        draw_tree(draw, 1080, 245, 0.82)
+def detect_color(text):
+    colors = {
+        "red": (235, 70, 70),
+        "blue": (70, 120, 235),
+        "green": (70, 180, 100),
+        "yellow": (250, 210, 50),
+        "orange": (242, 145, 55),
+        "purple": (145, 90, 190),
+        "pink": (245, 125, 165),
+    }
 
-    if "apple" in all_text:
-        # Three apples are introduced on the branch in scene 1 and collected afterward.
-        branch_y = 265
-        apple_xs = [1010, 1080, 1150]
-        visible = 3
-        if scene == 2:
-            visible = 2 if t > 1.0 else 3
-        elif scene >= 3:
-            visible = 1 if scene == 3 and t < 2.0 else 0
+    for name, value in colors.items():
+        if name in text:
+            return name, value
 
-        # Branch
-        draw.line([(960, branch_y+20),(1190,branch_y+20)],
-                  fill=(105,70,42), width=10)
+    return "red", colors["red"]
 
-        for i, x in enumerate(apple_xs):
-            if i < visible:
-                draw_apple(draw, x, branch_y-15, 0.58,
-                           5*math.sin(t*2+i))
 
-    if "basket" in all_text:
-        apples = 0
-        if scene >= 2:
-            if scene == 2:
-                apples = 1 if t < 3.5 else 2
-            else:
-                apples = 3
-        draw_basket(draw, 565, 465, 0.72, apples)
+def build_scene_plan(story, scene_no):
+    scenes = story.get("scenes", [])
 
-    # Simple number badges only when the lesson is actually about counting.
-    if any(w in lesson for w in ("count", "number", "one", "two", "three")):
-        count = 3 if scene >= 3 else (1 if scene == 2 else 0)
-        for i in range(count):
-            x = 430 + i*65
-            y = 445 + 7*math.sin(t*2+i)
-            draw.ellipse([x-20,y-20,x+20,y+20], fill=(245,180,70))
-            text_center(draw, str(i+1), x, y-13,
-                        get_font(21, True), (70,70,90))
+    if not scenes or scene_no > len(scenes):
+        return {
+            "description": "",
+            "action": "general",
+            "object": "stars",
+            "color": (248, 204, 70),
+            "object_name": "learning stars",
+            "focus": "center",
+        }
 
-def draw_action_effects(draw, story, scene, t):
-    """Small effects tied to actions rather than random decoration."""
-    descriptions = str(
-        story.get("scenes", [])[scene-1].get("visual_description","")
-    ).lower() if story.get("scenes") else ""
+    scene = scenes[scene_no - 1]
 
-    if any(w in descriptions for w in ("pick", "picks", "picking", "reach", "reaches")):
-        for i in range(4):
-            a = t*4 + i*1.57
-            x = 540 + math.cos(a)*34
-            y = 355 + math.sin(a)*22
-            draw.ellipse([x-3,y-3,x+3,y+3], fill=(255,235,100))
+    description = normalize(
+        scene.get("visual_description", "")
+    )
 
-    if any(w in descriptions for w in ("flies", "flies up", "flying", "flies down")):
-        for i in range(3):
-            x = 875 + i*16 + 10*math.sin(t*3+i)
-            y = 315 + i*15
-            draw.arc([x-12,y-8,x+12,y+8], 190, 350,
-                     fill=(255,255,255), width=2)
+    lesson = normalize(
+        story.get("lesson", "")
+    )
+
+    text = description + " " + lesson
+
+    color_name, color_value = detect_color(text)
+
+    # Object detection. Order matters.
+    if has_any(text, [
+        "ball", "sphere", "round ball"
+    ]):
+        obj = "ball"
+        object_name = color_name + " ball"
+    elif has_any(text, [
+        "flower", "flowers", "petal"
+    ]):
+        obj = "flower"
+        object_name = color_name + " flower"
+    elif has_any(text, [
+        "circle", "circular", "round"
+    ]):
+        obj = "circle"
+        object_name = "circle"
+    elif has_any(text, [
+        "square", "box"
+    ]):
+        obj = "square"
+        object_name = "square"
+    elif has_any(text, [
+        "triangle"
+    ]):
+        obj = "triangle"
+        object_name = "triangle"
+    elif has_any(text, [
+        "apple", "fruit"
+    ]):
+        obj = "apple"
+        object_name = color_name + " apple"
+    elif has_any(text, [
+        "star", "stars"
+    ]):
+        obj = "star"
+        object_name = "star"
+    elif has_any(text, [
+        "number", "count", "counting", "one", "two", "three"
+    ]):
+        obj = "numbers"
+        object_name = "numbers"
+    elif has_any(text, [
+        "leaf", "leaves", "tree"
+    ]):
+        obj = "leaf"
+        object_name = "leaf"
+    else:
+        obj = "stars"
+        object_name = "learning stars"
+
+    # Action detection from the AI visual description.
+    if has_any(text, ["roll", "rolling"]):
+        action = "roll"
+    elif has_any(text, ["hop", "hops", "hopping", "jump", "jumps"]):
+        action = "hop"
+    elif has_any(text, ["fly", "flies", "flying", "flies around"]):
+        action = "fly"
+    elif has_any(text, ["walk", "walks", "walking", "move", "moves", "moving"]):
+        action = "walk"
+    elif has_any(text, ["point", "points", "pointing"]):
+        action = "point"
+    elif has_any(text, ["pick", "picks", "picking", "pick up", "reach", "reaches"]):
+        action = "pick"
+    elif has_any(text, ["dance", "dances", "dancing", "celebrate", "celebrates"]):
+        action = "dance"
+    elif has_any(text, ["turn", "turns", "turning"]):
+        action = "turn"
+    else:
+        action = "general"
+
+    # Scene-specific focus.
+    if has_any(text, ["bobo"]):
+        focus = "Bobo"
+    elif has_any(text, ["mimi"]):
+        focus = "Mimi"
+    elif has_any(text, ["kiki"]):
+        focus = "Kiki"
+    else:
+        focus = "group"
+
+    return {
+        "description": description,
+        "action": action,
+        "object": obj,
+        "color": color_value,
+        "color_name": color_name,
+        "object_name": object_name,
+        "focus": focus,
+    }
 
 
 # ============================================================
 # EDUCATIONAL OBJECTS
 # ============================================================
 
-def draw_lesson_object(draw, lesson, scene, t, focus=0):
-    text = str(lesson).lower()
+def draw_circle_object(draw, cx, cy, radius, fill, outline=(255,255,255)):
+    draw.ellipse(
+        [cx-radius, cy-radius,
+         cx+radius, cy+radius],
+        fill=fill,
+        outline=outline,
+        width=4,
+    )
 
-    if any(w in text for w in ("count", "number", "numbers", "one", "two", "three")):
-        for i in range(3):
-            x = 510 + i*130
-            y = 400 + 10*math.sin(t*2+i)
-            draw.ellipse([x-38, y-38, x+38, y+38], fill=(245, 180, 70))
-            text_center(draw, str(i+1), x, y-23, get_font(32, True), (70,70,90))
 
-    elif any(w in text for w in ("shape", "circle", "square", "triangle")):
-        x1, x2, x3 = 485, 640, 795
-        ys = [
-            400 + 10*math.sin(t*2),
-            400 + 10*math.sin(t*2+1),
-            400 + 10*math.sin(t*2+2),
-        ]
+def draw_flower(draw, cx, cy, scale, color):
+    s = scale
 
-        draw.ellipse([x1-38, ys[0]-38, x1+38, ys[0]+38], fill=(90,160,230))
-        draw.rectangle([x2-38, ys[1]-38, x2+38, ys[1]+38], fill=(245,170,70))
-        draw.polygon(
-            [(x3, ys[2]-45), (x3-45, ys[2]+38), (x3+45, ys[2]+38)],
-            fill=(100,190,110),
+    for i in range(6):
+        angle = i * math.pi / 3
+        px = cx + math.cos(angle) * 48 * s
+        py = cy + math.sin(angle) * 48 * s
+
+        draw.ellipse(
+            [px-30*s, py-30*s,
+             px+30*s, py+30*s],
+            fill=color,
         )
 
-    elif any(w in text for w in ("color", "colour", "red", "blue", "green", "yellow")):
-        colors = [
-            (235,70,70), (70,120,235),
-            (70,180,100), (250,210,50),
-        ]
-        for i, color in enumerate(colors):
-            x = 430 + i*115
-            y = 405 + 9*math.sin(t*2.1+i)
-            draw.ellipse([x-32, y-32, x+32, y+32], fill=color)
+    draw.ellipse(
+        [cx-30*s, cy-30*s,
+         cx+30*s, cy+30*s],
+        fill=(250, 210, 50),
+    )
+
+    draw.line(
+        [(cx, cy+25*s),
+         (cx, cy+125*s)],
+        fill=(70, 145, 70),
+        width=max(4, int(8*s)),
+    )
+
+    draw.ellipse(
+        [cx-55*s, cy+75*s,
+         cx-5*s, cy+105*s],
+        fill=(90, 165, 80),
+    )
+
+
+def draw_object(draw, plan, t, action):
+    obj = plan["object"]
+    color = plan["color"]
+
+    # Main object motion.
+    if action == "roll":
+        cx = lerp(350, 920, ease(t))
+        cy = 430 - 15 * math.sin(t * math.pi * 3)
+        rotation = t * 10
+    elif action == "fly":
+        cx = 640 + 250 * math.sin(t * math.pi * 2)
+        cy = 330 + 70 * math.sin(t * math.pi * 4)
+        rotation = t * 4
+    elif action == "hop":
+        cx = 650
+        cy = 410 - 75 * max(0, math.sin(t * math.pi * 4))
+        rotation = 0
+    elif action == "pick":
+        cx = 650
+        cy = 420 - 40 * ease(t)
+        rotation = 0
+    else:
+        cx = 650 + 45 * math.sin(t * math.pi * 2)
+        cy = 405 + 18 * math.sin(t * math.pi * 3)
+        rotation = 0
+
+    if obj == "ball" or obj == "circle":
+        radius = 62 if obj == "ball" else 72
+        draw_circle_object(
+            draw,
+            cx,
+            cy,
+            radius,
+            color,
+        )
+
+        if obj == "ball":
+            # highlight and seam
+            draw.ellipse(
+                [cx-25, cy-35,
+                 cx-5, cy-15],
+                fill=(255, 255, 255),
+            )
+            draw.arc(
+                [cx-radius*.65, cy-radius*.65,
+                 cx+radius*.65, cy+radius*.65],
+                rotation * 20,
+                rotation * 20 + 120,
+                fill=(255, 255, 255),
+                width=3,
+            )
+
+        draw_center(
+            draw,
+            "CIRCLE" if obj == "circle" else "",
+            cx,
+            cy - 18,
+            OBJECT_FONT,
+            (255,255,255),
+        )
+
+    elif obj == "flower":
+        draw_flower(
+            draw,
+            cx,
+            cy - 40,
+            1.0,
+            color,
+        )
+
+    elif obj == "square":
+        size = 125
+        draw.rectangle(
+            [cx-size, cy-size,
+             cx+size, cy+size],
+            fill=color,
+            outline=(255,255,255),
+            width=5,
+        )
+
+    elif obj == "triangle":
+        draw.polygon(
+            [
+                (cx, cy-100),
+                (cx-110, cy+85),
+                (cx+110, cy+85),
+            ],
+            fill=color,
+            outline=(255,255,255),
+        )
+
+    elif obj == "apple":
+        draw.ellipse(
+            [cx-65, cy-60,
+             cx+65, cy+70],
+            fill=color,
+        )
+        draw.ellipse(
+            [cx-50, cy-30,
+             cx+10, cy+50],
+            fill=color,
+        )
+        draw.line(
+            [(cx, cy-55), (cx+10, cy-105)],
+            fill=(95,65,35),
+            width=10,
+        )
+
+    elif obj == "star":
+        draw.polygon(
+            star_points(cx, cy, 80),
+            fill=color,
+        )
+
+    elif obj == "numbers":
+        for i in range(3):
+            nx = cx - 145 + i * 145
+            ny = cy + 15 * math.sin(t*math.pi*2+i)
+            draw_circle_object(
+                draw,
+                nx,
+                ny,
+                48,
+                (245, 180, 70),
+            )
+            draw_center(
+                draw,
+                str(i+1),
+                nx,
+                ny-23,
+                OBJECT_FONT,
+                (70,70,90),
+            )
+
+    elif obj == "leaf":
+        draw.ellipse(
+            [cx-85, cy-35,
+             cx+85, cy+35],
+            fill=(80, 175, 90),
+        )
+        draw.line(
+            [(cx-80, cy+25),
+             (cx+80, cy-25)],
+            fill=(50,125,65),
+            width=5,
+        )
 
     else:
-        # Generic concept: five stars with one highlighted.
         for i in range(5):
-            x = 440 + i*105
-            y = 405 + 12*math.sin(t*1.8+i)
-            r = 28
-            fill = (248,204,70)
-            if i == int(focus) % 5:
-                r = 35 + 4*math.sin(t*4)
-                fill = (255,235,90)
-            draw_star(draw, x, y, r, fill)
+            sx = 430 + i * 105
+            sy = 400 + 14 * math.sin(t*2+i)
+            draw.polygon(
+                star_points(sx, sy, 28),
+                fill=(248,204,70),
+    )
 
 
 # ============================================================
-# PARTICLES
+# CHARACTER POSITIONS AND ACTIONS
 # ============================================================
 
-def draw_particles(draw, t, scene):
-    for i in range(18):
-        phase = i*.73 + scene
-        x = 70 + (i*97) % 1140
-        y = 145 + (i*61) % 300
-        pulse = .5 + .5*math.sin(t*3 + phase)
+def get_positions(scene_no, t, plan):
+    p = ease(t)
 
-        if pulse > .62:
-            r = 2 + 4*pulse
+    # Default positions.
+    bobo = [390, 285]
+    mimi = [650, 285]
+    kiki = [900, 280]
+
+    action = plan["action"]
+    focus = plan["focus"]
+
+    if scene_no == 1:
+        bobo[0] = lerp(-150, 390, p)
+
+        if action == "walk":
+            bobo[1] += 8 * math.sin(t * math.pi * 8)
+
+        mimi[1] += -12 * max(0, math.sin(t * math.pi * 4))
+        kiki[1] += 15 * math.sin(t * math.pi * 2)
+
+    elif scene_no == 2:
+        # Characters approach the object.
+        bobo[0] = lerp(300, 500, p)
+        mimi[0] = lerp(760, 690, p)
+        kiki[0] = lerp(970, 850, p)
+
+        if action == "roll":
+            bobo[1] += 7 * math.sin(t * math.pi * 8)
+
+        if action == "hop":
+            mimi[1] += -35 * max(0, math.sin(t * math.pi * 5))
+
+        kiki[1] += 18 * math.sin(t * math.pi * 3)
+
+    elif scene_no == 3:
+        if action == "fly":
+            kiki[0] = 760 + 230 * math.sin(t * math.pi * 2)
+            kiki[1] = 245 + 90 * math.sin(t * math.pi * 4)
+
+        bobo[0] = 370
+        mimi[0] = 640
+
+        if action == "point":
+            if focus == "Mimi":
+                mimi[1] -= 8 * math.sin(t * math.pi * 2)
+            else:
+                bobo[1] -= 8 * math.sin(t * math.pi * 2)
+
+    else:
+        # Final scene forms a circle around the lesson object.
+        center_x = 650
+        center_y = 375
+        radius = 190
+
+        angles = [
+            math.pi + p * math.pi/2,
+            -math.pi/2 + p * math.pi/3,
+            0 + p * math.pi/4,
+        ]
+
+        bobo = [
+            center_x + math.cos(angles[0]) * radius,
+            center_y + math.sin(angles[0]) * 105,
+        ]
+
+        mimi = [
+            center_x + math.cos(angles[1]) * radius,
+            center_y + math.sin(angles[1]) * 105,
+        ]
+
+        kiki = [
+            center_x + math.cos(angles[2]) * radius,
+            center_y + math.sin(angles[2]) * 105 - 20,
+        ]
+
+        if action == "dance" or scene_no == 4:
+            bobo[1] += 10 * math.sin(t * math.pi * 6)
+            mimi[1] += 12 * math.sin(t * math.pi * 6 + 1)
+            kiki[1] += 18 * math.sin(t * math.pi * 5)
+
+    return {
+        "Bobo": tuple(bobo),
+        "Mimi": tuple(mimi),
+        "Kiki": tuple(kiki),
+    }
+
+
+def draw_action_effects(draw, plan, t):
+    action = plan["action"]
+    obj = plan["object"]
+
+    if action == "roll":
+        for i in range(6):
+            x = 350 + i * 80 - 110 * t
+            y = 465
+            draw.line(
+                [(x, y), (x-35, y)],
+                fill=(255,255,255),
+                width=3,
+            )
+
+    if action == "fly":
+        for i in range(8):
+            x = 500 + i * 70
+            y = 180 + 35 * math.sin(t*4+i)
+            r = 3 + 3 * math.sin(t*5+i)
             draw.ellipse(
                 [x-r, y-r, x+r, y+r],
                 fill=(255,255,245),
             )
 
+    if action == "hop":
+        for i in range(3):
+            x = 570 + i * 35
+            y = 495
+            draw.arc(
+                [x-12, y-8, x+12, y+8],
+                200, 340,
+                fill=(90,130,80),
+                width=3,
+            )
 
-# ============================================================
-# CAMERA / CHARACTER STAGING
-# ============================================================
-
-def camera_state(scene, t):
-    if scene == 1:
-        x = 22*math.sin(t*.45)
-        zoom = 1.0 + .018*math.sin(t*.55)
-    elif scene == 2:
-        x = 55*math.sin(t*.28)
-        zoom = 1.0 + .028*math.sin(t*.42)
-    elif scene == 3:
-        x = -70*math.sin(t*.24)
-        zoom = 1.0 + .035*math.sin(t*.38)
-    else:
-        x = 30*math.sin(t*.22)
-        zoom = 1.0 + .045*math.sin(t*.32)
-
-    return x, zoom
-
-
-def character_positions(scene, t, duration):
-    p = clamp(t / max(duration, .001), 0, 1)
-
-    if scene == 1:
-        bobo_x = lerp(-170, 350, ease_out(clamp(t/3.5, 0, 1)))
-        mimi_x = 670
-        kiki_x = 970
-        kiki_y = 285 + 25*math.sin(t*2.0)
-
-    elif scene == 2:
-        bobo_x = lerp(350, 455, smoothstep(p))
-        mimi_x = lerp(670, 620, smoothstep(p))
-        kiki_x = lerp(970, 820, smoothstep(p))
-        kiki_y = 285 + 30*math.sin(t*2.5)
-
-    elif scene == 3:
-        bobo_x = lerp(455, 390, smoothstep(p))
-        mimi_x = lerp(620, 700, smoothstep(p))
-        kiki_x = 900 + 80*math.sin(t*.9)
-        kiki_y = 235 + 50*math.sin(t*1.7)
-
-    else:
-        bobo_x = lerp(390, 450, smoothstep(p))
-        mimi_x = lerp(700, 650, smoothstep(p))
-        kiki_x = lerp(900, 820, smoothstep(p))
-        kiki_y = 255 + 35*math.sin(t*1.8)
-
-    return {
-        "Bobo": (bobo_x, 275),
-        "Mimi": (mimi_x, 280),
-        "Kiki": (kiki_x, kiki_y),
-    }
-
-
-
-# ============================================================
-# EXPLICIT CHARACTER / OBJECT INTERACTIONS
-# ============================================================
-
-def draw_story_interactions(draw, story, scene, t, positions, camera_x, zoom):
-    """Make the generated story visible through concrete actions."""
-    text = " ".join(
-        str(s.get("visual_description", "")) + " " + str(s.get("narration", ""))
-        for s in story.get("scenes", [])
-    ).lower()
-
-    def wp(x, y):
-        return (
-            WIDTH/2 + (x - WIDTH/2 - camera_x) * zoom,
-            GROUND_Y + (y - GROUND_Y) * zoom,
+    if action == "point":
+        draw.ellipse(
+            [625, 250, 675, 300],
+            outline=(255,255,255),
+            width=4,
         )
 
-    bx, by = positions["Bobo"]
-    mx, my = positions["Mimi"]
-    kx, ky = positions["Kiki"]
-
-    # Scene 2: Bobo reaches toward the basket and carries the first apple.
-    if scene == 2 and "apple" in text:
-        progress = clamp((t - 0.8) / 3.0, 0, 1)
-        hand_x = bx + 72
-        hand_y = by + 145
-        basket_x, basket_y = 565, 430
-
-        # Apple travels from the tree area to Bobo's hand, then toward basket.
-        if progress < 0.55:
-            q = ease_in_out(progress / 0.55)
-            sx, sy = 1035, 245
-            ex, ey = hand_x, hand_y
-        else:
-            q = ease_in_out((progress - 0.55) / 0.45)
-            sx, sy = hand_x, hand_y
-            ex, ey = basket_x - 20, basket_y + 8
-
-        ax = lerp(sx, ex, q)
-        ay = lerp(sy, ey, q) - 35 * math.sin(q * math.pi)
-        px, py = wp(ax, ay)
-        draw_apple(draw, px, py, 0.34 * zoom)
-
-        # Reach lines make the action readable.
-        if 0.05 < progress < 0.7:
-            hx, hy = wp(hand_x, hand_y)
-            draw.line([(hx-18*zoom, hy-10*zoom), (px,py)],
-                      fill=(105,65,40), width=max(3,int(7*zoom)))
-
-    # Scene 3: Mimi holds the basket while Bobo adds apples.
-    if scene == 3 and "basket" in text:
-        bxw, byw = wp(565, 430)
-        # A small handle highlight and gentle lift make the basket feel held.
-        lift = 5 * math.sin(t * 2.5)
-        draw.arc(
-            [bxw-48*zoom, byw-55*zoom+lift,
-             bxw+48*zoom, byw+15*zoom+lift],
-            180, 360,
-            fill=(125,80,45),
-            width=max(2,int(5*zoom))
-        )
-
-        # Bobo presents an apple toward the basket.
-        if t > 0.7:
-            axw, ayw = wp(bx + 58, by + 125)
-            draw_apple(draw, axw, ayw, 0.31*zoom, 2*math.sin(t*4))
-
-    # Scene 3: Kiki flies down with the final apple.
-    if scene == 3 and "kiki" in text and "apple" in text:
-        q = clamp((t - 1.2) / 3.0, 0, 1)
-        # Kiki's position is already animated. Put the final apple at its beak.
-        if q > 0.15:
-            kxp, kyp = wp(kx + 45, ky + 55)
-            draw_apple(draw, kxp, kyp, 0.28*zoom, 2*math.sin(t*5))
-
-    # Scene 4: the completed basket is the focus of the celebration.
-    if scene == 4 and "three" in text and "apple" in text:
-        cx, cy = wp(565, 430)
-        pulse = 1.0 + 0.08*math.sin(t*4)
-        # Number 3 above the basket.
-        r = 25 * zoom * pulse
-        draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(245,180,70))
-        text_center(draw, "3", cx, cy-r*0.72,
-                    get_font(max(14,int(24*zoom)), True), (70,70,90))
-
-        # Celebration arcs.
+    if action == "pick":
         for i in range(5):
-            a = t*2 + i*1.2
-            sx = cx + math.cos(a)*70*zoom
-            sy = cy - 30*zoom + math.sin(a)*35*zoom
-            draw.ellipse([sx-3*zoom,sy-3*zoom,sx+3*zoom,sy+3*zoom],
-                         fill=(255,215,70))
+            angle = i * math.pi/2.5 + t
+            x = 650 + math.cos(angle) * 105
+            y = 320 + math.sin(angle) * 105
+            draw.polygon(
+                star_points(x, y, 10),
+                fill=(255,230,90),
+            )
+
+    if action == "dance":
+        for i in range(8):
+            angle = i * math.pi/4 + t * 2
+            x = 650 + math.cos(angle) * 230
+            y = 365 + math.sin(angle) * 120
+            draw.polygon(
+                star_points(x, y, 9),
+                fill=(255,235,100),
+        )
 
 
 # ============================================================
 # SCENE FRAME
 # ============================================================
 
-def render_frame(story, scene, t, scene_duration, total_duration):
-    frame = Image.new("RGB", (WIDTH, HEIGHT), (255,255,255))
-    draw = ImageDraw.Draw(frame)
-
-    camera_x, zoom = camera_state(scene, t)
-
-    draw_background(draw, scene, t, camera_x)
-
-    # Story-specific props are drawn first so characters can interact with them.
-    draw_story_objects(draw, story, scene, t)
-    lesson = str(story.get("lesson", "")).lower()
-    concrete_story = any(
-        w in (" ".join(str(s.get("visual_description","")) for s in story.get("scenes", []))).lower()
-        for w in ("apple", "basket", "tree", "ball", "flower", "book", "toy", "cup", "leaf")
+def render_frame(story, scene_no, local_t, scene_duration, total_duration):
+    image = Image.new(
+        "RGB",
+        (WIDTH, HEIGHT),
+        (255,255,255),
     )
-    if not concrete_story:
-        draw_lesson_object(
-            draw,
-            story.get("lesson", ""),
-            scene,
-            t,
-            focus=int(t*1.2),
-        )
-    draw_action_effects(draw, story, scene, t)
-    draw_particles(draw, t, scene)
+    draw = ImageDraw.Draw(image)
 
-    positions = character_positions(scene, t, scene_duration)
-
-    # Scene-specific gestures.
-    bobo_gesture = 0.0
-    mimi_gesture = 0.0
-
-    if scene == 1:
-        bobo_gesture = .45 + .12*math.sin(t*2)
-    elif scene == 2:
-        bobo_gesture = .18
-        mimi_gesture = -.35
-    elif scene == 3:
-        bobo_gesture = -.15
-        mimi_gesture = -.5
-    else:
-        bobo_gesture = .35
-        mimi_gesture = .25
-
-    # Draw characters into a transparent world layer.
-    world = Image.new("RGBA", (WIDTH, HEIGHT), (0,0,0,0))
-    wd = ImageDraw.Draw(world)
-
-    bx, by = positions["Bobo"]
-    mx, my = positions["Mimi"]
-    kx, ky = positions["Kiki"]
-
-    # Apply actual camera zoom and pan.
-    def world_point(x, y):
-        return (
-            WIDTH/2 + (x - WIDTH/2 - camera_x)*zoom,
-            GROUND_Y + (y - GROUND_Y)*zoom,
-        )
-
-    bxp, byp = world_point(bx, by)
-    mxp, myp = world_point(mx, my)
-    kxp, kyp = world_point(kx, ky)
-
-    bobo_bounce = 6*math.sin(t*7)
-    mimi_bounce = 4*math.sin(t*5.5)
-
-    draw_bobo(
-        wd,
-        bxp,
-        byp + bobo_bounce*zoom,
-        scale=1.05*zoom,
-        phase=t*6.8,
-        wave=t*3.0,
-        gesture=bobo_gesture,
-    )
-
-    draw_mimi(
-        wd,
-        mxp,
-        myp + mimi_bounce*zoom,
-        scale=1.02*zoom,
-        phase=t*4.2,
-        wave=t*2.2,
-        gesture=mimi_gesture,
-    )
-
-    draw_kiki(
-        wd,
-        kxp,
-        kyp,
-        scale=.92*zoom,
-        phase=t*7.0,
-        flight=t,
-    )
-
-    # Draw interaction details over the characters/world so objects visibly
-    # connect to the actions being narrated.
-    draw_story_interactions(
-        wd,
+    plan = build_scene_plan(
         story,
-        scene,
-        t,
-        positions,
-        camera_x,
-        zoom,
+        scene_no,
     )
 
-    frame = Image.alpha_composite(frame.convert("RGBA"), world).convert("RGB")
+    camera_x = (
+        20 * math.sin(local_t * .5 + scene_no)
+    )
+
+    draw_background(
+        draw,
+        scene_no,
+        local_t,
+        camera_x,
+    )
 
     # Scene title.
-    title = str(story.get("title", "NobiNest Adventure"))
+    title = str(
+        story.get("title", "NobiNest Adventure")
+    )
+
     if len(title) > 48:
         title = title[:45] + "..."
 
-    text_center(
-        ImageDraw.Draw(frame),
+    draw_center(
+        draw,
         title,
         WIDTH/2,
         18,
@@ -997,55 +1115,170 @@ def render_frame(story, scene, t, scene_duration, total_duration):
         (55,70,90),
     )
 
-    # Avoid a large lesson card behind subtitles. For concrete stories,
-    # keep the frame clean and let the narration/subtitles carry the lesson.
-    concrete_story = any(
-        w in (" ".join(
-            str(s.get("visual_description","")) for s in story.get("scenes", [])
-        )).lower()
-        for w in ("apple","basket","tree","ball","flower","book","toy","cup","leaf")
+    # A small scene indicator makes the progression visible.
+    draw_center(
+        draw,
+        f"Scene {scene_no} of 4",
+        WIDTH/2,
+        58,
+        SMALL_FONT,
+        (70,90,105),
     )
 
-    if not concrete_story:
-        badge = Image.new("RGBA", (WIDTH, HEIGHT), (0,0,0,0))
-        bd = ImageDraw.Draw(badge)
-        rounded(
-            bd,
-            [55, 575, WIDTH-55, 660],
-            18,
-            (255,255,255,220),
-            (70,90,110,220),
-            2,
-        )
-        lines = wrap_text(
-            bd,
-            "Lesson: " + str(story.get("lesson","")),
-            LESSON_FONT,
-            WIDTH-150,
-        )
-        y = 590
-        for line in lines[:2]:
-            text_center(bd, line, WIDTH/2, y, LESSON_FONT, (40,50,65,220))
-            y += 27
-        frame = Image.alpha_composite(frame.convert("RGBA"), badge).convert("RGB")
+    # Draw the scene-specific educational object.
+    draw_object(
+        draw,
+        plan,
+        local_t / max(scene_duration, .001),
+        plan["action"],
+    )
 
-    return frame
+    draw_action_effects(
+        draw,
+        plan,
+        local_t / max(scene_duration, .001),
+    )
+
+    positions = get_positions(
+        scene_no,
+        local_t / max(scene_duration, .001),
+        plan,
+    )
+
+    bobo_x, bobo_y = positions["Bobo"]
+    mimi_x, mimi_y = positions["Mimi"]
+    kiki_x, kiki_y = positions["Kiki"]
+
+    # Character motion.
+    bobo_bounce = 7 * math.sin(local_t * 7)
+    mimi_bounce = -10 * max(
+        0,
+        math.sin(local_t * 4.2),
+    )
+    kiki_float = 13 * math.sin(local_t * 2.6)
+
+    if plan["action"] == "hop":
+        mimi_bounce = -32 * max(
+            0,
+            math.sin(local_t * 6),
+        )
+
+    if plan["action"] == "fly":
+        kiki_float = 22 * math.sin(
+            local_t * 5
+        )
+
+    draw_bobo(
+        draw,
+        bobo_x - camera_x*.30,
+        bobo_y,
+        scale=1.08,
+        bounce=bobo_bounce,
+        wave=local_t * (
+            3.0 if scene_no in (1,4) else .9
+        ),
+    )
+
+    draw_mimi(
+        draw,
+        mimi_x - camera_x*.35,
+        mimi_y,
+        scale=1.04,
+        bounce=mimi_bounce,
+        wave=local_t * (
+            2.4 if plan["action"] in ("point","pick","dance")
+            else 1.2
+        ),
+    )
+
+    draw_kiki(
+        draw,
+        kiki_x - camera_x*.42,
+        kiki_y,
+        scale=.92,
+        bounce=kiki_float,
+        flap=local_t * 7,
+    )
+
+    # Lesson card.
+    lesson = str(
+        story.get("lesson", "")
+    ).strip()
+
+    overlay = Image.new(
+        "RGBA",
+        (WIDTH, HEIGHT),
+        (0,0,0,0),
+    )
+    odraw = ImageDraw.Draw(overlay)
+
+    card_alpha = int(
+        225 * clamp(
+            (local_t - .4) / 1.0,
+            0,
+            1,
+        )
+    )
+
+    rounded(
+        odraw,
+        [60, 570, WIDTH-60, 690],
+        22,
+        fill=(255,255,255,card_alpha),
+        outline=(80,100,120,card_alpha),
+        width=2,
+    )
+
+    lesson_lines = wrap_text(
+        odraw,
+        "Lesson: " + lesson,
+        LESSON_FONT,
+        WIDTH-170,
+    )
+
+    y = 588
+
+    for line in lesson_lines[:3]:
+        bbox = odraw.textbbox(
+            (0,0),
+            line,
+            font=LESSON_FONT,
+        )
+        x = (WIDTH - (bbox[2]-bbox[0])) / 2
+
+        odraw.text(
+            (x,y),
+            line,
+            font=LESSON_FONT,
+            fill=(40,50,65,card_alpha),
+        )
+
+        y += 27
+
+    image = alpha_layer(
+        image,
+        overlay,
+    )
+
+    return image
 
 
 # ============================================================
-# AUDIO / SUBTITLES
+# AUDIO
 # ============================================================
 
-def audio_duration():
-    cmd = [
-        "ffprobe", "-v", "error",
+def get_audio_duration():
+    command = [
+        "ffprobe",
+        "-v", "error",
         "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
         str(AUDIO_FILE),
     ]
 
     result = subprocess.run(
-        cmd,
+        command,
         capture_output=True,
         text=True,
         check=True,
@@ -1054,103 +1287,174 @@ def audio_duration():
     value = result.stdout.strip()
 
     if not value:
-        raise RuntimeError("Could not determine narration duration.")
+        raise RuntimeError(
+            "Could not determine narration duration."
+        )
 
     return float(value)
 
 
-def timestamp(seconds):
-    ms = int(round((seconds - int(seconds))*1000))
-    total = int(seconds)
+# ============================================================
+# SUBTITLES
+# ============================================================
 
-    if ms >= 1000:
-        total += 1
-        ms = 0
+def format_timestamp(seconds):
+    total_seconds = int(seconds)
+    milliseconds = int(
+        round(
+            (seconds-total_seconds)*1000
+        )
+    )
 
-    h = total // 3600
-    m = (total % 3600) // 60
-    s = total % 60
+    if milliseconds >= 1000:
+        milliseconds = 0
+        total_seconds += 1
 
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    secs = total_seconds % 60
+
+    return (
+        f"{hours:02d}:"
+        f"{minutes:02d}:"
+        f"{secs:02d},"
+        f"{milliseconds:03d}"
+    )
 
 
 def create_subtitles(story, duration):
-    chunks = []
+    parts = []
 
     for scene in story.get("scenes", []):
-        text = str(scene.get("narration","")).strip()
-        if text:
-            chunks.append(text)
+        narration = str(
+            scene.get("narration", "")
+        ).strip()
+
+        if narration:
+            parts.append(narration)
 
     song = story.get("song", {})
+
     if isinstance(song, dict):
-        text = str(song.get("lyrics","")).strip()
-        if text:
-            chunks.append(text)
+        lyrics = str(
+            song.get("lyrics", "")
+        ).strip()
 
-    ending = str(story.get("ending","")).strip()
+        if lyrics:
+            parts.append(lyrics)
+
+    ending = str(
+        story.get("ending", "")
+    ).strip()
+
     if ending:
-        chunks.append(ending)
+        parts.append(ending)
 
-    words = " ".join(chunks).split()
+    full_text = " ".join(parts).strip()
+    words = full_text.split()
 
     if not words:
         return
 
-    # Short readable chunks for preschool viewers.
-    chunk_size = 5
-    groups = [
+    # Child-friendly subtitle chunks.
+    chunk_size = 6
+
+    chunks = [
         words[i:i+chunk_size]
-        for i in range(0, len(words), chunk_size)
+        for i in range(
+            0,
+            len(words),
+            chunk_size,
+        )
     ]
 
-    # Estimate timing from word count rather than making every
-    # subtitle the same length.
-    weights = [max(1, len(g)) for g in groups]
-    total_weight = sum(weights)
+    chunk_duration = duration / len(chunks)
 
-    with open(SRT_FILE, "w", encoding="utf-8") as f:
-        current = 0.0
+    with open(
+        SRT_FILE,
+        "w",
+        encoding="utf-8",
+    ) as file:
 
-        for index, group in enumerate(groups, 1):
-            span = duration * weights[index-1] / total_weight
-            start = current
-            end = min(duration, current + span)
-            current = end
+        for index, chunk in enumerate(
+            chunks,
+            1,
+        ):
+            start = (
+                index-1
+            ) * chunk_duration
 
-            f.write(f"{index}\n")
-            f.write(f"{timestamp(start)} --> {timestamp(end)}\n")
-            f.write(" ".join(group))
-            f.write("\n\n")
+            end = min(
+                duration,
+                index * chunk_duration,
+            )
+
+            file.write(
+                f"{index}\n"
+            )
+
+            file.write(
+                f"{format_timestamp(start)}"
+                f" --> "
+                f"{format_timestamp(end)}\n"
+            )
+
+            file.write(
+                " ".join(chunk)
+            )
+            file.write("\n\n")
 
 
 # ============================================================
-# FFMPEG
+# VIDEO RENDER
 # ============================================================
 
 def render_video(story, duration):
-    print("==============================================")
-    print("NOBINEST 2D MOTION RENDERER v6")
-    print("==============================================")
-    print(f"Resolution : {WIDTH}x{HEIGHT}")
-    print(f"FPS        : {FPS}")
-    print(f"Duration   : {duration:.2f}s")
+    print("=" * 55)
+    print("NOBINEST SCENE-AWARE 2D MOTION RENDERER")
+    print("=" * 55)
+    print(f"Resolution: {WIDTH}x{HEIGHT}")
+    print(f"Frame rate: {FPS}")
+    print(f"Duration: {duration:.2f}s")
+    print("")
 
-    # Escape subtitle path for FFmpeg filter syntax.
-    subtitle_path = (
-        str(SRT_FILE)
-        .replace("\\", "/")
-        .replace(":", r"\:")
-        .replace("'", r"\'")
+    # Print exactly what the renderer understood.
+    for i, scene in enumerate(
+        story.get("scenes", []),
+        1,
+    ):
+        plan = build_scene_plan(
+            story,
+            i,
+        )
+
+        print(
+            f"Scene {i}: "
+            f"object={plan['object_name']}, "
+            f"action={plan['action']}, "
+            f"focus={plan['focus']}"
+        )
+
+        print(
+            f"  visual_description: "
+            f"{scene.get('visual_description', '')}"
+        )
+
+    subtitle_path = str(
+        SRT_FILE
+    ).replace("\\", "/").replace(
+        ":", "\\:"
     )
 
-    subtitle_filter = (
-        f"subtitles='{subtitle_path}':force_style="
+    vf = (
+        "subtitles="
+        + subtitle_path
+        + ":force_style="
         "'FontName=DejaVu Sans,"
-        "FontSize=18,"
+        "FontSize=21,"
         "Bold=1,"
         "Alignment=2,"
-        "MarginV=28,"
+        "MarginV=34,"
         "Outline=2,"
         "Shadow=1'"
     )
@@ -1158,32 +1462,27 @@ def render_video(story, duration):
     command = [
         "ffmpeg",
         "-y",
-
-        # Video from Python.
         "-f", "rawvideo",
+        "-vcodec", "rawvideo",
         "-pix_fmt", "rgb24",
         "-s", f"{WIDTH}x{HEIGHT}",
         "-r", str(FPS),
         "-i", "-",
-
-        # Narration.
         "-i", str(AUDIO_FILE),
-
-        "-vf", subtitle_filter,
-
+        "-vf", vf,
         "-c:v", "libx264",
         "-preset", "veryfast",
-        "-crf", "21",
+        "-crf", "22",
         "-pix_fmt", "yuv420p",
-
         "-c:a", "aac",
         "-b:a", "128k",
-
         "-t", f"{duration:.3f}",
         "-shortest",
-
         str(VIDEO_FILE),
     ]
+
+    print("")
+    print("Starting FFmpeg...")
 
     process = subprocess.Popen(
         command,
@@ -1192,61 +1491,155 @@ def render_video(story, duration):
         stderr=subprocess.PIPE,
     )
 
-    total_frames = max(1, int(math.ceil(duration*FPS)))
+    total_frames = max(
+        1,
+        int(
+            math.ceil(
+                duration * FPS
+            )
+        ),
+    )
+
+    last_scene = None
 
     try:
-        for i in range(total_frames):
-            current = i/FPS
-
-            scene = min(
-                4,
-                int((current/duration)*4)+1,
+        for frame_index in range(
+            total_frames
+        ):
+            current_time = (
+                frame_index / FPS
             )
 
-            scene_duration = duration/4
-            local_t = current - (scene-1)*scene_duration
+            scene_no = min(
+                4,
+                int(
+                    (current_time / duration)
+                    * 4
+                ) + 1,
+            )
+
+            scene_duration = (
+                duration / 4
+            )
+
+            local_t = (
+                current_time
+                - (scene_no-1)
+                * scene_duration
+            )
+
+            local_t = clamp(
+                local_t,
+                0,
+                scene_duration,
+            )
+
+            if scene_no != last_scene:
+                print(
+                    f"Animating scene "
+                    f"{scene_no}/4..."
+                )
+                last_scene = scene_no
 
             frame = render_frame(
                 story,
-                scene,
+                scene_no,
                 local_t,
                 scene_duration,
                 duration,
             )
 
-            process.stdin.write(frame.tobytes())
+            process.stdin.write(
+                frame.tobytes()
+            )
 
-            if i % FPS == 0:
-                pct = 100*i/total_frames
+            if frame_index % FPS == 0:
+                percent = (
+                    frame_index
+                    / total_frames
+                    * 100
+                )
+
                 print(
-                    f"Rendered {current:6.1f}s / "
-                    f"{duration:6.1f}s "
-                    f"({pct:5.1f}%)"
+                    f"Rendered "
+                    f"{current_time:5.1f}s / "
+                    f"{duration:5.1f}s "
+                    f"({percent:5.1f}%)"
                 )
 
         process.stdin.close()
 
         stderr = process.stderr.read().decode(
-            "utf-8", errors="replace"
+            "utf-8",
+            errors="replace",
         )
 
-        code = process.wait()
+        return_code = process.wait()
 
-        if code != 0:
+        if return_code != 0:
             print(stderr)
             raise RuntimeError(
-                f"FFmpeg failed with exit code {code}"
+                "FFmpeg failed with "
+                f"exit code {return_code}"
             )
 
     except BrokenPipeError:
         stderr = process.stderr.read().decode(
-            "utf-8", errors="replace"
+            "utf-8",
+            errors="replace",
         )
+
         process.wait()
+
         print(stderr)
+
         raise RuntimeError(
-            "FFmpeg closed the video pipe unexpectedly."
+            "FFmpeg closed the video pipe "
+            "unexpectedly."
     )
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
+def validate_inputs(story):
+    if not isinstance(story, dict):
+        raise ValueError(
+            "story.json is not a JSON object."
+        )
+
+    scenes = story.get("scenes")
+
+    if not isinstance(scenes, list):
+        raise ValueError(
+            "story.json does not contain scenes."
+        )
+
+    if len(scenes) != 4:
+        raise ValueError(
+            "NobiNest requires exactly 4 scenes."
+        )
+
+    for i, scene in enumerate(
+        scenes,
+        1,
+    ):
+        if not scene.get(
+            "visual_description"
+        ):
+            raise ValueError(
+                f"Scene {i} is missing "
+                "visual_description."
+            )
+
+        if not scene.get(
+            "narration"
+        ):
+            raise ValueError(
+                f"Scene {i} is missing "
+                "narration."
+            )
 
 
 # ============================================================
@@ -1254,78 +1647,128 @@ def render_video(story, duration):
 # ============================================================
 
 def main():
-    print("="*60)
-    print("NOBINEST KIDS ANIMATED VIDEO RENDERER")
-    print("="*60)
+    print("=" * 55)
+    print("NOBINEST KIDS SCENE-AWARE VIDEO RENDERER")
+    print("=" * 55)
 
     if not STORY_FILE.exists():
-        raise FileNotFoundError(f"Missing {STORY_FILE}")
+        raise FileNotFoundError(
+            f"Missing story file: {STORY_FILE}"
+        )
 
     if not AUDIO_FILE.exists():
-        raise FileNotFoundError(f"Missing {AUDIO_FILE}")
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    with open(STORY_FILE, "r", encoding="utf-8") as f:
-        story = json.load(f)
-
-    duration = audio_duration()
-
-    print(f"Story    : {story.get('title','Untitled')}")
-    print(f"Lesson   : {story.get('lesson','')}")
-    print(f"Audio    : {duration:.2f}s")
-
-    # The workflow separately verifies 60-90 seconds.
-    # Fail here too, so a bad episode never gets silently rendered.
-    if duration < MIN_DURATION:
-        raise RuntimeError(
-            f"Audio is only {duration:.2f}s. "
-            f"NobiNest episodes must be at least {MIN_DURATION:.0f}s."
+        raise FileNotFoundError(
+            f"Missing narration file: {AUDIO_FILE}"
         )
 
-    if duration > MAX_DURATION:
+    OUTPUT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with open(
+        STORY_FILE,
+        "r",
+        encoding="utf-8",
+    ) as file:
+        story = json.load(file)
+
+    validate_inputs(story)
+
+    duration = get_audio_duration()
+
+    if duration <= 0:
         raise RuntimeError(
-            f"Audio is {duration:.2f}s. "
-            f"NobiNest episodes must not exceed {MAX_DURATION:.0f}s."
+            "Narration duration is zero."
         )
 
+    print(
+        f"Story: "
+        f"{story.get('title', 'Untitled')}"
+    )
+
+    print(
+        f"Lesson: "
+        f"{story.get('lesson', '')}"
+    )
+
+    print(
+        f"Audio duration: "
+        f"{duration:.2f}s"
+    )
+
+    print("")
+    print(
+        "Reading AI visual descriptions..."
+    )
+
+    for i in range(1, 5):
+        plan = build_scene_plan(
+            story,
+            i,
+        )
+
+        print(
+            f"Scene {i}: "
+            f"{plan['object_name']} | "
+            f"{plan['action']} | "
+            f"focus={plan['focus']}"
+        )
+
+    print("")
     print("Creating subtitles...")
-    create_subtitles(story, duration)
 
-    print("Rendering:")
-    print("  walking cycles")
-    print("  hopping cycles")
-    print("  wing flapping")
-    print("  flying movement")
-    print("  arm gestures")
-    print("  object animation")
-    print("  camera pan")
-    print("  camera zoom")
-    print("  parallax background")
-    print("  moving clouds")
-    print("  swaying grass")
-    print("  swaying flowers")
-    print("  particles")
-    print("  animated lesson objects")
+    create_subtitles(
+        story,
+        duration,
+    )
 
-    render_video(story, duration)
+    print(
+        "Rendering scene-specific animation..."
+    )
+
+    render_video(
+        story,
+        duration,
+    )
 
     if not VIDEO_FILE.exists():
         raise RuntimeError(
-            "Renderer finished but MP4 was not created."
+            "Renderer finished but MP4 "
+            "was not created."
         )
 
-    size_mb = VIDEO_FILE.stat().st_size/(1024*1024)
+    size_mb = (
+        VIDEO_FILE.stat().st_size
+        / (1024 * 1024)
+    )
 
     print("")
-    print("="*60)
-    print("NOBINEST EPISODE CREATED")
-    print("="*60)
-    print(f"Video     : {VIDEO_FILE}")
-    print(f"Subtitles : {SRT_FILE}")
-    print(f"Size      : {size_mb:.2f} MB")
-    print(f"Duration  : {duration:.2f}s")
+    print("=" * 55)
+    print("SCENE-AWARE VIDEO CREATED SUCCESSFULLY")
+    print("=" * 55)
+    print(f"Video: {VIDEO_FILE}")
+    print(f"Size: {size_mb:.2f} MB")
+    print(f"Subtitles: {SRT_FILE}")
     print("")
+    print("Scene-aware features:")
+    print("  visual_description parsing")
+    print("  scene-specific objects")
+    print("  ball rolling")
+    print("  character hopping")
+    print("  bird flying")
+    print("  pointing actions")
+    print("  picking/reaching effects")
+    print("  group dancing")
+    print("  circle formation")
+    print("  animated shapes")
+    print("  animated flowers")
+    print("  animated numbers")
+    print("  animated colors")
+    print("  camera movement")
+    print("  moving clouds")
+    print("  moving grass")
+    print("  animated subtitles")
 
 
 if __name__ == "__main__":
@@ -1333,6 +1776,8 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         print("")
+        print("=" * 55)
         print("RENDERER ERROR")
+        print("=" * 55)
         print(str(exc))
         sys.exit(1)
