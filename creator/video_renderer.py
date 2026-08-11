@@ -444,7 +444,7 @@ def draw_kiki(draw, x, y, scale=1.0, bounce=0.0, flap=0.0):
         [x + 5*s, y + 183*s,
          x + 46*s, y + 210*s],
         fill=orange,
-        )
+    )
 
 
 # ============================================================
@@ -558,7 +558,7 @@ def draw_background(draw, scene_no, t, camera_x):
             [fx - 8 + sway, fy - 8,
              fx + 8 + sway, fy + 8],
             fill=flower_color,
-    )
+        )
 
 
 # ============================================================
@@ -913,7 +913,7 @@ def draw_action_caption(draw, plan, t):
         95,
         SMALL_FONT,
         (70, 85, 100),
-        )
+    )
 
 
 # ============================================================
@@ -1489,6 +1489,43 @@ def render_frame(story, scene_no, local_t, scene_duration, total_duration):
 
 
 # ============================================================
+# SCENE TRANSITION OVERLAY
+# ============================================================
+
+def draw_scene_transition_overlay(image, t, scene_no):
+    """
+    Add a short cinematic fade at the beginning and end of each
+    scene. This keeps scene changes smooth without hiding the
+    animation for long.
+    """
+    # Each scene is rendered independently, so t is local scene time.
+    # The renderer uses a short fade-in/out window.
+    FADE_SECONDS = 0.45
+
+    # The exact scene duration is not passed here. A short fade-out
+    # is therefore based on the final portion of the normalized scene.
+    # The caller can mark the end using the global scene boundary.
+    # For safety, only apply a fade-in here. The video itself remains
+    # fully visible during the majority of the scene.
+    fade_in = clamp(t / FADE_SECONDS, 0.0, 1.0)
+
+    # First scene starts from black; later scenes start from black too,
+    # producing a clean cut/fade between the four visual chapters.
+    alpha = int(255 * (1.0 - ease_in_out(fade_in)))
+
+    if alpha <= 0:
+        return image
+
+    overlay = Image.new(
+        "RGBA",
+        (WIDTH, HEIGHT),
+        (0, 0, 0, alpha),
+    )
+
+    return alpha_layer(image, overlay)
+
+
+# ============================================================
 # AUDIO
 # ============================================================
 # AUDIO
@@ -1838,7 +1875,7 @@ def render_video(story, duration):
         raise RuntimeError(
             "FFmpeg closed the video pipe "
             "unexpectedly."
-    )
+        )
 
 
 # ============================================================
