@@ -444,7 +444,7 @@ def draw_kiki(draw, x, y, scale=1.0, bounce=0.0, flap=0.0):
         [x + 5*s, y + 183*s,
          x + 46*s, y + 210*s],
         fill=orange,
-               )
+        )
 
 
 # ============================================================
@@ -558,7 +558,7 @@ def draw_background(draw, scene_no, t, camera_x):
             [fx - 8 + sway, fy - 8,
              fx + 8 + sway, fy + 8],
             fill=flower_color,
-        )
+    )
 
 
 # ============================================================
@@ -810,7 +810,7 @@ def build_scene_plan(story, scene_no):
         "actor_actions": actor_actions,
         "beats": beats,
         "camera": camera,
-            }
+    }
 
 
 # ============================================================
@@ -913,7 +913,7 @@ def draw_action_caption(draw, plan, t):
         95,
         SMALL_FONT,
         (70, 85, 100),
-    )
+        )
 
 
 # ============================================================
@@ -1120,12 +1120,64 @@ def draw_object(draw, plan, t, action):
             draw.polygon(
                 star_points(sx, sy, 28),
                 fill=(248,204,70),
-        )
+            )
 
 
 # ============================================================
 # CHARACTER POSITIONS AND ACTIONS
 # ============================================================
+
+def draw_action_effects(draw, plan, t, object_xy):
+    """Draw lightweight visual effects that reinforce the current action."""
+    action = beat_action(plan, t)
+    x, y = object_xy
+
+    # Moving dust puffs for walking, hopping and landing.
+    if action in ("walk", "hop", "land"):
+        for i in range(3):
+            phase = t * 5.0 + i * 2.1
+            px = x - 45 + i * 45 + 10 * math.sin(phase)
+            py = GROUND_Y - 8 - 6 * abs(math.sin(phase))
+            r = 4 + 3 * (0.5 + 0.5 * math.sin(phase))
+            draw.ellipse([px-r, py-r, px+r, py+r], fill=(225, 214, 190))
+
+    # Speed lines make flight visibly different from standing.
+    if action == "fly":
+        for i in range(4):
+            yy = y - 35 + i * 22
+            length = 35 + 15 * math.sin(t * 7 + i)
+            draw.line([(x - 85, yy), (x - 85 - length, yy)], fill=(255,255,255), width=3)
+
+    # Pointing cue: a soft ring around the target.
+    if action == "point":
+        pulse = 1 + 0.12 * math.sin(t * 8)
+        r = 48 * pulse
+        draw.ellipse([x-r, y-r, x+r, y+r], outline=(255, 245, 150), width=3)
+
+    # Reach/pick cue: small sparkles around the object.
+    if action == "pick":
+        for i in range(6):
+            a = t * 2.0 + i * math.pi / 3
+            rr = 55 + 8 * math.sin(t * 6 + i)
+            px = x + math.cos(a) * rr
+            py = y + math.sin(a) * rr
+            draw_star(draw, px, py, 7, (255, 220, 80))
+
+    # Rolling cue: repeated motion streaks behind the object.
+    if action == "roll":
+        for i in range(3):
+            yy = y + 25 + i * 12
+            draw.line([(x - 70 - i * 12, yy), (x - 25, yy)], fill=(120,140,150), width=3)
+
+    # Dance/celebration cue: floating confetti and sparkles.
+    if action in ("dance", "celebrate"):
+        for i in range(10):
+            a = i * 0.73 + t * 1.4
+            radius = 90 + 25 * math.sin(t * 2 + i)
+            px = WIDTH / 2 + math.cos(a) * radius
+            py = 300 + math.sin(a * 1.3) * 120
+            r = 3 + (i % 3)
+            draw.ellipse([px-r, py-r, px+r, py+r], fill=(255, 215, 75))
 
 def get_positions(scene_no, t, plan):
     """
