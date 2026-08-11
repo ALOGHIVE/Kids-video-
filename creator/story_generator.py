@@ -56,9 +56,10 @@ STORY_TXT = os.path.join(
 # the entire GitHub Actions workflow.
 
 MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
 ]
 
 
@@ -400,6 +401,59 @@ def get_api_key():
 
     return key
 
+
+def get_available_models(client):
+    """
+    Ask the Gemini API which models are actually available
+    to this project.
+    """
+
+    available = []
+
+    print("")
+    print("Checking available Gemini models...")
+
+    try:
+        for model in client.models.list():
+
+            name = getattr(model, "name", "")
+
+            if not name:
+                continue
+
+            model_id = name.replace(
+                "models/",
+                ""
+            )
+
+            supported_methods = getattr(
+                model,
+                "supported_actions",
+                []
+            )
+
+            if (
+                model_id in PREFERRED_MODELS
+                and (
+                    not supported_methods
+                    or "generateContent" in supported_methods
+                )
+            ):
+                available.append(model_id)
+
+        print("Available preferred models:")
+
+        for model in available:
+            print(f"  - {model}")
+
+        return available
+
+    except Exception as exc:
+
+        print("WARNING: Could not list models.")
+        print(str(exc))
+
+        return PREFERRED_MODELS.copy()
 
 # ============================================================
 # JSON CLEANING
