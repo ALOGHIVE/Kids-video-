@@ -444,7 +444,7 @@ def draw_kiki(draw, x, y, scale=1.0, bounce=0.0, flap=0.0):
         [x + 5*s, y + 183*s,
          x + 46*s, y + 210*s],
         fill=orange,
-    )
+               )
 
 
 # ============================================================
@@ -558,7 +558,7 @@ def draw_background(draw, scene_no, t, camera_x):
             [fx - 8 + sway, fy - 8,
              fx + 8 + sway, fy + 8],
             fill=flower_color,
-)
+        )
 
 
 # ============================================================
@@ -594,123 +594,330 @@ def detect_color(text):
 
 
 def build_scene_plan(story, scene_no):
+    """
+    Convert Gemini's visual_description into a deterministic animation plan.
+
+    The plan is deliberately richer than a single action.  A preschool
+    scene should feel like a small piece of animation, so we extract:
+      * the main object
+      * object color
+      * participating characters
+      * multiple actions
+      * an interaction target
+      * a camera style
+      * a four-beat choreography
+    """
     scenes = story.get("scenes", [])
 
     if not scenes or scene_no > len(scenes):
-        return {
-            "description": "",
-            "action": "general",
-            "object": "stars",
-            "color": (248, 204, 70),
-            "object_name": "learning stars",
-            "focus": "center",
-        }
+        description = ""
+    else:
+        description = normalize(
+            scenes[scene_no - 1].get("visual_description", "")
+        )
 
-    scene = scenes[scene_no - 1]
-
-    description = normalize(
-        scene.get("visual_description", "")
-    )
-
-    lesson = normalize(
-        story.get("lesson", "")
-    )
-
-    text = description + " " + lesson
+    lesson = normalize(story.get("lesson", ""))
+    text = f"{description} {lesson}"
 
     color_name, color_value = detect_color(text)
 
-    # Object detection. Order matters.
-    if has_any(text, [
-        "ball", "sphere", "round ball"
-    ]):
-        obj = "ball"
-        object_name = color_name + " ball"
-    elif has_any(text, [
-        "flower", "flowers", "petal"
-    ]):
-        obj = "flower"
-        object_name = color_name + " flower"
-    elif has_any(text, [
-        "circle", "circular", "round"
-    ]):
-        obj = "circle"
-        object_name = "circle"
-    elif has_any(text, [
-        "square", "box"
-    ]):
-        obj = "square"
-        object_name = "square"
-    elif has_any(text, [
-        "triangle"
-    ]):
-        obj = "triangle"
-        object_name = "triangle"
-    elif has_any(text, [
-        "apple", "fruit"
-    ]):
-        obj = "apple"
-        object_name = color_name + " apple"
-    elif has_any(text, [
-        "star", "stars"
-    ]):
-        obj = "star"
-        object_name = "star"
-    elif has_any(text, [
-        "number", "count", "counting", "one", "two", "three"
-    ]):
-        obj = "numbers"
-        object_name = "numbers"
-    elif has_any(text, [
-        "leaf", "leaves", "tree"
-    ]):
-        obj = "leaf"
-        object_name = "leaf"
-    else:
-        obj = "stars"
-        object_name = "learning stars"
+    # --------------------------------------------------------
+    # Educational object
+    # --------------------------------------------------------
+    object_rules = [
+        (["ball", "sphere", "round ball"], "ball", f"{color_name} ball"),
+        (["flower", "flowers", "petal"], "flower", f"{color_name} flower"),
+        (["circle", "circular"], "circle", "circle"),
+        (["square", "box"], "square", "square"),
+        (["triangle"], "triangle", "triangle"),
+        (["apple", "fruit"], "apple", f"{color_name} apple"),
+        (["star", "stars"], "star", "star"),
+        (["number", "count", "counting"], "numbers", "numbers"),
+        (["leaf", "leaves", "tree"], "leaf", "leaf"),
+    ]
 
-    # Action detection from the AI visual description.
-    if has_any(text, ["roll", "rolling"]):
-        action = "roll"
-    elif has_any(text, ["hop", "hops", "hopping", "jump", "jumps"]):
-        action = "hop"
-    elif has_any(text, ["fly", "flies", "flying", "flies around"]):
-        action = "fly"
-    elif has_any(text, ["walk", "walks", "walking", "move", "moves", "moving"]):
-        action = "walk"
-    elif has_any(text, ["point", "points", "pointing"]):
-        action = "point"
-    elif has_any(text, ["pick", "picks", "picking", "pick up", "reach", "reaches"]):
-        action = "pick"
-    elif has_any(text, ["dance", "dances", "dancing", "celebrate", "celebrates"]):
-        action = "dance"
-    elif has_any(text, ["turn", "turns", "turning"]):
-        action = "turn"
-    else:
-        action = "general"
+    obj = "stars"
+    object_name = "learning stars"
 
-    # Scene-specific focus.
-    if has_any(text, ["bobo"]):
-        focus = "Bobo"
-    elif has_any(text, ["mimi"]):
-        focus = "Mimi"
-    elif has_any(text, ["kiki"]):
+    for keywords, candidate, label in object_rules:
+        if has_any(text, keywords):
+            obj = candidate
+            object_name = label
+            break
+
+    # --------------------------------------------------------
+    # All actions mentioned in the description
+    # --------------------------------------------------------
+    action_keywords = [
+        ("roll", ["roll", "rolling", "rolled"]),
+        ("hop", ["hop", "hops", "hopping", "jump", "jumps", "jumping"]),
+        ("fly", ["fly", "flies", "flying", "flew"]),
+        ("walk", ["walk", "walks", "walking", "move", "moves", "moving"]),
+        ("point", ["point", "points", "pointing"]),
+        ("pick", ["pick", "picks", "picking", "pick up", "reach", "reaches", "reaching"]),
+        ("dance", ["dance", "dances", "dancing"]),
+        ("celebrate", ["celebrate", "celebrates", "celebrating", "clap", "claps", "cheer"]),
+        ("turn", ["turn", "turns", "turning"]),
+        ("land", ["land", "lands", "landing"]),
+    ]
+
+    detected_actions = []
+    for action, keywords in action_keywords:
+        if has_any(description, keywords):
+            detected_actions.append(action)
+
+    if not detected_actions:
+        detected_actions = ["general"]
+
+    # Preserve textual order approximately by using the order in which
+    # action keywords first appear in the description.
+    ordered = []
+    for action, keywords in action_keywords:
+        positions = [description.find(k) for k in keywords if description.find(k) >= 0]
+        if positions:
+            ordered.append((min(positions), action))
+    ordered.sort()
+    ordered_actions = [a for _, a in ordered]
+
+    if ordered_actions:
+        detected_actions = ordered_actions
+
+    # --------------------------------------------------------
+    # Which characters are explicitly involved?
+    # --------------------------------------------------------
+    characters = []
+    for name in ("Bobo", "Mimi", "Kiki"):
+        if name.lower() in description:
+            characters.append(name)
+
+    if not characters:
+        characters = ["Bobo", "Mimi", "Kiki"]
+
+    focus = characters[0] if len(characters) == 1 else "group"
+
+    # Give Kiki natural priority for flight scenes.
+    if "Kiki" in characters and "fly" in detected_actions:
         focus = "Kiki"
+
+    # --------------------------------------------------------
+    # Character-specific action extraction
+    # --------------------------------------------------------
+    actor_actions = {name: [] for name in ("Bobo", "Mimi", "Kiki")}
+
+    # Sentences are useful because Gemini normally writes one action
+    # per sentence/phrase.
+    clauses = re.split(r"[,.;]| and | then | while | as ", description)
+
+    for clause in clauses:
+        c = clause.strip()
+        if not c:
+            continue
+
+        local_actions = []
+        for action, keywords in action_keywords:
+            if has_any(c, keywords):
+                local_actions.append(action)
+
+        if not local_actions:
+            continue
+
+        for name in ("Bobo", "Mimi", "Kiki"):
+            if name.lower() in c:
+                actor_actions[name].extend(local_actions)
+
+    # If a scene mentions an action but not the actor in the same clause,
+    # assign the action to the explicit focus character.
+    for action in detected_actions:
+        if action == "general":
+            continue
+        if not any(action in vals for vals in actor_actions.values()):
+            target = focus if focus != "group" else characters[0]
+            actor_actions[target].append(action)
+
+    for name in actor_actions:
+        # De-duplicate without destroying order.
+        actor_actions[name] = list(dict.fromkeys(actor_actions[name]))
+
+    # --------------------------------------------------------
+    # Four-beat choreography
+    # --------------------------------------------------------
+    # Every scene gets a beginning, action, interaction and reaction.
+    primary = detected_actions[0] if detected_actions else "general"
+    secondary = detected_actions[1] if len(detected_actions) > 1 else primary
+
+    beats = [
+        {"phase": "intro", "action": "enter"},
+        {"phase": "action", "action": primary},
+        {"phase": "interaction", "action": secondary},
+        {"phase": "resolve", "action": "celebrate"},
+    ]
+
+    # A scene-specific progression overrides generic beats.
+    if scene_no == 1:
+        beats = [
+            {"phase": "intro", "action": "enter"},
+            {"phase": "discover", "action": primary},
+            {"phase": "demonstrate", "action": secondary},
+            {"phase": "react", "action": "celebrate"},
+        ]
+    elif scene_no == 2:
+        beats = [
+            {"phase": "approach", "action": "walk"},
+            {"phase": "demonstrate", "action": primary},
+            {"phase": "interact", "action": secondary},
+            {"phase": "react", "action": "celebrate"},
+        ]
+    elif scene_no == 3:
+        beats = [
+            {"phase": "approach", "action": primary},
+            {"phase": "demonstrate", "action": secondary},
+            {"phase": "interact", "action": "pick"},
+            {"phase": "react", "action": "celebrate"},
+        ]
+    elif scene_no == 4:
+        beats = [
+            {"phase": "gather", "action": "walk"},
+            {"phase": "show", "action": primary},
+            {"phase": "celebrate", "action": "dance"},
+            {"phase": "finale", "action": "celebrate"},
+        ]
+
+    # --------------------------------------------------------
+    # Camera direction
+    # --------------------------------------------------------
+    if "fly" in detected_actions:
+        camera = "follow"
+    elif "walk" in detected_actions or "roll" in detected_actions:
+        camera = "track"
+    elif "point" in detected_actions or "pick" in detected_actions:
+        camera = "focus"
+    elif "dance" in detected_actions or "celebrate" in detected_actions:
+        camera = "wide"
     else:
-        focus = "group"
+        camera = "gentle"
 
     return {
         "description": description,
-        "action": action,
+        "lesson": lesson,
+        "action": primary,
+        "actions": detected_actions,
         "object": obj,
         "color": color_value,
         "color_name": color_name,
         "object_name": object_name,
         "focus": focus,
+        "characters": characters,
+        "actor_actions": actor_actions,
+        "beats": beats,
+        "camera": camera,
+            }
+
+
+# ============================================================
+# SCENE CHOREOGRAPHY HELPERS
+# ============================================================
+
+def phase_progress(t, phase_index, count=4):
+    start = phase_index / count
+    end = (phase_index + 1) / count
+    return clamp((t - start) / max(end - start, 0.001), 0.0, 1.0)
+
+
+def active_phase(t, count=4):
+    return min(count - 1, int(clamp(t, 0, 0.999999) * count))
+
+
+def beat_action(plan, t):
+    index = active_phase(t, len(plan.get("beats", [])) or 4)
+    beats = plan.get("beats", [])
+    if not beats:
+        return plan.get("action", "general")
+    return beats[index].get("action", "general")
+
+
+def actor_is_active(plan, name, action=None):
+    actions = plan.get("actor_actions", {}).get(name, [])
+    if action is None:
+        return bool(actions)
+    return action in actions
+
+
+def scene_object_anchor(scene_no, plan, t):
+    """
+    Returns the main learning object position.  Objects stay spatially
+    coherent within a scene instead of teleporting between generic frames.
+    """
+    action = beat_action(plan, t)
+
+    if scene_no == 1:
+        return (730 + 35 * math.sin(t * math.pi * 2), 410)
+    if scene_no == 2:
+        # The object becomes the destination.
+        return (650, 405 - 12 * math.sin(t * math.pi * 2))
+    if scene_no == 3:
+        # Slightly right so Mimi has a clear target.
+        return (735, 405)
+    if scene_no == 4:
+        return (650, 405)
+
+    return (650, 405)
+
+
+def draw_target_marker(draw, x, y, t, color=(255, 255, 255)):
+    pulse = 1 + 0.18 * math.sin(t * math.pi * 6)
+    r = 42 * pulse
+    draw.ellipse(
+        [x-r, y-r, x+r, y+r],
+        outline=color,
+        width=3,
+    )
+    for angle in range(0, 360, 90):
+        a = math.radians(angle)
+        x1 = x + math.cos(a) * (r + 6)
+        y1 = y + math.sin(a) * (r + 6)
+        x2 = x + math.cos(a) * (r + 17)
+        y2 = y + math.sin(a) * (r + 17)
+        draw.line([(x1, y1), (x2, y2)], fill=color, width=3)
+
+
+def draw_action_caption(draw, plan, t):
+    """
+    Tiny visual action cue.  This is intentionally graphical rather
+    than a large block of text so the video remains a cartoon.
+    """
+    action = beat_action(plan, t)
+    labels = {
+        "walk": "GO!",
+        "hop": "HOP!",
+        "fly": "FLY!",
+        "point": "LOOK!",
+        "pick": "REACH!",
+        "roll": "ROLL!",
+        "dance": "DANCE!",
+        "celebrate": "YAY!",
     }
 
+    label = labels.get(action)
+    if not label:
+        return
 
+    # Only show during the middle of a scene, not constantly.
+    pulse = math.sin(t * math.pi * 8)
+    if pulse < -0.25:
+        return
+
+    draw_center(
+        draw,
+        label,
+        WIDTH / 2,
+        95,
+        SMALL_FONT,
+        (70, 85, 100),
+    )
+
+
+# ============================================================
+# EDUCATIONAL OBJECTS
 # ============================================================
 # EDUCATIONAL OBJECTS
 # ============================================================
@@ -913,7 +1120,7 @@ def draw_object(draw, plan, t, action):
             draw.polygon(
                 star_points(sx, sy, 28),
                 fill=(248,204,70),
-    )
+        )
 
 
 # ============================================================
@@ -921,84 +1128,83 @@ def draw_object(draw, plan, t, action):
 # ============================================================
 
 def get_positions(scene_no, t, plan):
+    """
+    Scene choreography is deliberately different for every scene.
+    Positions are targets, not static poses.  The renderer interpolates
+    between them and adds secondary motion.
+    """
     p = ease(t)
+    phase = active_phase(t, 4)
+    q = phase_progress(t, phase, 4)
 
-    # Default positions.
-    bobo = [390, 285]
+    # Base staging.
+    bobo = [360, 285]
     mimi = [650, 285]
-    kiki = [900, 280]
-
-    action = plan["action"]
-    focus = plan["focus"]
+    kiki = [930, 265]
 
     if scene_no == 1:
-        bobo[0] = lerp(-150, 390, p)
+        # Establishing shot: Bobo enters, Mimi waits, Kiki floats.
+        bobo[0] = lerp(-150, 360, ease(clamp(t / 0.55, 0, 1)))
+        bobo[1] += 8 * math.sin(t * math.pi * 10)
 
-        if action == "walk":
-            bobo[1] += 8 * math.sin(t * math.pi * 8)
-
+        mimi[0] = 610 + 25 * math.sin(t * math.pi * 2)
         mimi[1] += -12 * max(0, math.sin(t * math.pi * 4))
-        kiki[1] += 15 * math.sin(t * math.pi * 2)
+
+        kiki[0] = 930 + 55 * math.sin(t * math.pi * 1.5)
+        kiki[1] = 250 + 35 * math.sin(t * math.pi * 3)
+
+        if phase >= 2:
+            # Group attention shifts toward the object.
+            bobo[0] = lerp(bobo[0], 520, ease(q))
+            mimi[0] = lerp(mimi[0], 660, ease(q))
+            kiki[0] = lerp(kiki[0], 820, ease(q))
 
     elif scene_no == 2:
-        # Characters approach the object.
-        bobo[0] = lerp(300, 500, p)
-        mimi[0] = lerp(760, 690, p)
-        kiki[0] = lerp(970, 850, p)
+        # Strong left-to-right approach.  This is visually different
+        # from scene 1 and makes the object the destination.
+        bobo[0] = lerp(300, 555, ease(t))
+        bobo[1] += 8 * math.sin(t * math.pi * 9)
 
-        if action == "roll":
-            bobo[1] += 7 * math.sin(t * math.pi * 8)
+        mimi[0] = lerp(820, 690, ease(t))
+        mimi[1] += -22 * max(0, math.sin(t * math.pi * 5))
 
-        if action == "hop":
-            mimi[1] += -35 * max(0, math.sin(t * math.pi * 5))
+        kiki[0] = lerp(1020, 860, ease(t))
+        kiki[1] = 245 + 25 * math.sin(t * math.pi * 3)
 
-        kiki[1] += 18 * math.sin(t * math.pi * 3)
+        if "point" in plan.get("actions", []) and phase >= 1:
+            bobo[0] = lerp(bobo[0], 545, ease(q))
 
     elif scene_no == 3:
-        if action == "fly":
-            kiki[0] = 760 + 230 * math.sin(t * math.pi * 2)
-            kiki[1] = 245 + 90 * math.sin(t * math.pi * 4)
+        # Mimi becomes the visual lead. Kiki performs an aerial move.
+        bobo[0] = 380 + 25 * math.sin(t * math.pi * 2)
+        bobo[1] = 285
 
-        bobo[0] = 370
-        mimi[0] = 640
+        mimi[0] = lerp(520, 690, ease(t))
+        mimi[1] = 285 - 35 * max(0, math.sin(t * math.pi * 6))
 
-        if action == "point":
-            if focus == "Mimi":
-                mimi[1] -= 8 * math.sin(t * math.pi * 2)
-            else:
-                bobo[1] -= 8 * math.sin(t * math.pi * 2)
+        kiki[0] = lerp(1030, 790, ease(t))
+        kiki[1] = 205 + 105 * math.sin(t * math.pi * 2)
+
+        if "land" in plan.get("actions", []) and phase >= 2:
+            kiki[0] = lerp(kiki[0], 820, ease(q))
+            kiki[1] = lerp(kiki[1], 285, ease(q))
 
     else:
-        # Final scene forms a circle around the lesson object.
-        center_x = 650
-        center_y = 375
-        radius = 190
+        # Finale: characters converge, then spread for a readable
+        # celebration composition.
+        bobo[0] = lerp(350, 465, ease(t))
+        mimi[0] = lerp(650, 640, ease(t))
+        kiki[0] = lerp(950, 820, ease(t))
 
-        angles = [
-            math.pi + p * math.pi/2,
-            -math.pi/2 + p * math.pi/3,
-            0 + p * math.pi/4,
-        ]
+        bobo[1] = 285 + 12 * math.sin(t * math.pi * 7)
+        mimi[1] = 285 - 18 * max(0, math.sin(t * math.pi * 6 + .5))
+        kiki[1] = 255 + 24 * math.sin(t * math.pi * 5)
 
-        bobo = [
-            center_x + math.cos(angles[0]) * radius,
-            center_y + math.sin(angles[0]) * 105,
-        ]
-
-        mimi = [
-            center_x + math.cos(angles[1]) * radius,
-            center_y + math.sin(angles[1]) * 105,
-        ]
-
-        kiki = [
-            center_x + math.cos(angles[2]) * radius,
-            center_y + math.sin(angles[2]) * 105 - 20,
-        ]
-
-        if action == "dance" or scene_no == 4:
-            bobo[1] += 10 * math.sin(t * math.pi * 6)
-            mimi[1] += 12 * math.sin(t * math.pi * 6 + 1)
-            kiki[1] += 18 * math.sin(t * math.pi * 5)
+        if phase >= 2:
+            # Celebration pose around the object.
+            bobo[0] = lerp(bobo[0], 430, ease(q))
+            mimi[0] = lerp(mimi[0], 650, ease(q))
+            kiki[0] = lerp(kiki[0], 870, ease(q))
 
     return {
         "Bobo": tuple(bobo),
@@ -1007,115 +1213,58 @@ def get_positions(scene_no, t, plan):
     }
 
 
-def draw_action_effects(draw, plan, t):
-    action = plan["action"]
-    obj = plan["object"]
-
-    if action == "roll":
-        for i in range(6):
-            x = 350 + i * 80 - 110 * t
-            y = 465
-            draw.line(
-                [(x, y), (x-35, y)],
-                fill=(255,255,255),
-                width=3,
-            )
-
-    if action == "fly":
-        for i in range(8):
-            x = 500 + i * 70
-            y = 180 + 35 * math.sin(t*4+i)
-            r = 3 + 3 * math.sin(t*5+i)
-            draw.ellipse(
-                [x-r, y-r, x+r, y+r],
-                fill=(255,255,245),
-            )
-
-    if action == "hop":
-        for i in range(3):
-            x = 570 + i * 35
-            y = 495
-            draw.arc(
-                [x-12, y-8, x+12, y+8],
-                200, 340,
-                fill=(90,130,80),
-                width=3,
-            )
-
-    if action == "point":
-        draw.ellipse(
-            [625, 250, 675, 300],
-            outline=(255,255,255),
-            width=4,
-        )
-
-    if action == "pick":
-        for i in range(5):
-            angle = i * math.pi/2.5 + t
-            x = 650 + math.cos(angle) * 105
-            y = 320 + math.sin(angle) * 105
-            draw.polygon(
-                star_points(x, y, 10),
-                fill=(255,230,90),
-            )
-
-    if action == "dance":
-        for i in range(8):
-            angle = i * math.pi/4 + t * 2
-            x = 650 + math.cos(angle) * 230
-            y = 365 + math.sin(angle) * 120
-            draw.polygon(
-                star_points(x, y, 9),
-                fill=(255,235,100),
-        )
-
-
+# ============================================================
+# SCENE FRAME
 # ============================================================
 # SCENE FRAME
 # ============================================================
 
 def render_frame(story, scene_no, local_t, scene_duration, total_duration):
-    image = Image.new(
-        "RGB",
-        (WIDTH, HEIGHT),
-        (255,255,255),
-    )
+    image = Image.new("RGB", (WIDTH, HEIGHT), (255,255,255))
     draw = ImageDraw.Draw(image)
 
-    plan = build_scene_plan(
-        story,
-        scene_no,
-    )
+    plan = build_scene_plan(story, scene_no)
+    t = clamp(local_t / max(scene_duration, 0.001), 0.0, 1.0)
 
-    camera_x = (
-        20 * math.sin(local_t * .5 + scene_no)
-    )
+    # --------------------------------------------------------
+    # Cinematic camera
+    # --------------------------------------------------------
+    camera_style = plan.get("camera", "gentle")
 
-    draw_background(
-        draw,
-        scene_no,
-        local_t,
-        camera_x,
-    )
+    if camera_style == "track":
+        camera_x = lerp(-25, 35, ease(t))
+    elif camera_style == "follow":
+        camera_x = 35 * math.sin(t * math.pi * 1.2)
+    elif camera_style == "focus":
+        camera_x = -18 * math.sin(t * math.pi)
+    elif camera_style == "wide":
+        camera_x = 12 * math.sin(t * math.pi)
+    else:
+        camera_x = 18 * math.sin(t * math.pi * 1.2)
 
-    # Scene title.
-    title = str(
-        story.get("title", "NobiNest Adventure")
-    )
+    draw_background(draw, scene_no, local_t, camera_x)
 
+    # Subtle foreground depth.
+    for i in range(12):
+        x = (i * 121 + 30 - camera_x * .25) % WIDTH
+        y = GROUND_Y + 18 + (i % 3) * 13
+        draw.ellipse(
+            [x-4, y-4, x+4, y+4],
+            fill=(95,165,85),
+        )
+
+    # --------------------------------------------------------
+    # Title and scene identity
+    # --------------------------------------------------------
+    title = str(story.get("title", "NobiNest Adventure"))
     if len(title) > 48:
         title = title[:45] + "..."
 
     draw_center(
-        draw,
-        title,
-        WIDTH/2,
-        18,
-        TITLE_FONT,
-        (55,70,90),
+        draw, title, WIDTH/2, 18,
+        TITLE_FONT, (55,70,90),
     )
 
-    # A small scene indicator makes the progression visible.
     draw_center(
         draw,
         f"Scene {scene_no} of 4",
@@ -1125,23 +1274,44 @@ def render_frame(story, scene_no, local_t, scene_duration, total_duration):
         (70,90,105),
     )
 
-    # Draw the scene-specific educational object.
+    draw_action_caption(draw, plan, t)
+
+    # --------------------------------------------------------
+    # Main object
+    # --------------------------------------------------------
+    object_xy = scene_object_anchor(scene_no, plan, t)
+
+    # The object itself is drawn using the scene's action, but its
+    # position is controlled separately so characters can interact
+    # with a stable target.
+    object_plan = dict(plan)
+    object_plan["object_anchor"] = object_xy
+
     draw_object(
         draw,
-        plan,
-        local_t / max(scene_duration, .001),
-        plan["action"],
+        object_plan,
+        t,
+        beat_action(plan, t),
     )
+
+    # Target marker is only shown when the story asks the character
+    # to look/point/reach. This makes interaction obvious.
+    if beat_action(plan, t) in ("point", "pick"):
+        draw_target_marker(draw, object_xy[0], object_xy[1], t)
 
     draw_action_effects(
         draw,
         plan,
-        local_t / max(scene_duration, .001),
+        t,
+        object_xy,
     )
 
+    # --------------------------------------------------------
+    # Characters
+    # --------------------------------------------------------
     positions = get_positions(
         scene_no,
-        local_t / max(scene_duration, .001),
+        t,
         plan,
     )
 
@@ -1149,34 +1319,49 @@ def render_frame(story, scene_no, local_t, scene_duration, total_duration):
     mimi_x, mimi_y = positions["Mimi"]
     kiki_x, kiki_y = positions["Kiki"]
 
-    # Character motion.
-    bobo_bounce = 7 * math.sin(local_t * 7)
-    mimi_bounce = -10 * max(
-        0,
-        math.sin(local_t * 4.2),
+    current_action = beat_action(plan, t)
+
+    # Stronger motion when an action is active.
+    bobo_bounce = 6 * math.sin(local_t * 7)
+    mimi_bounce = -8 * max(0, math.sin(local_t * 4.2))
+    kiki_float = 10 * math.sin(local_t * 2.8)
+
+    if current_action == "hop":
+        mimi_bounce = -35 * max(0, math.sin(local_t * 6.5))
+
+    if current_action == "fly":
+        kiki_float = 25 * math.sin(local_t * 5.5)
+
+    if current_action in ("dance", "celebrate"):
+        bobo_bounce = 15 * math.sin(local_t * 8)
+        mimi_bounce = -20 * max(0, math.sin(local_t * 7))
+        kiki_float = 24 * math.sin(local_t * 6)
+
+    # Waving becomes more purposeful in action scenes.
+    bobo_wave = local_t * (
+        4.2 if actor_is_active(plan, "Bobo") or current_action in ("dance","celebrate")
+        else 1.0
     )
-    kiki_float = 13 * math.sin(local_t * 2.6)
+    mimi_wave = local_t * (
+        4.0 if actor_is_active(plan, "Mimi") or current_action in ("dance","celebrate")
+        else 1.1
+    )
 
-    if plan["action"] == "hop":
-        mimi_bounce = -32 * max(
-            0,
-            math.sin(local_t * 6),
-        )
+    # Kiki's wings flap faster during flight.
+    kiki_flap = local_t * (
+        11 if current_action == "fly" or actor_is_active(plan, "Kiki", "fly")
+        else 7
+    )
 
-    if plan["action"] == "fly":
-        kiki_float = 22 * math.sin(
-            local_t * 5
-        )
-
+    # Draw order gives Kiki aerial depth while keeping the animals
+    # readable in front of the environment.
     draw_bobo(
         draw,
         bobo_x - camera_x*.30,
         bobo_y,
         scale=1.08,
         bounce=bobo_bounce,
-        wave=local_t * (
-            3.0 if scene_no in (1,4) else .9
-        ),
+        wave=bobo_wave,
     )
 
     draw_mimi(
@@ -1185,10 +1370,7 @@ def render_frame(story, scene_no, local_t, scene_duration, total_duration):
         mimi_y,
         scale=1.04,
         bounce=mimi_bounce,
-        wave=local_t * (
-            2.4 if plan["action"] in ("point","pick","dance")
-            else 1.2
-        ),
+        wave=mimi_wave,
     )
 
     draw_kiki(
@@ -1197,13 +1379,13 @@ def render_frame(story, scene_no, local_t, scene_duration, total_duration):
         kiki_y,
         scale=.92,
         bounce=kiki_float,
-        flap=local_t * 7,
+        flap=kiki_flap,
     )
 
-    # Lesson card.
-    lesson = str(
-        story.get("lesson", "")
-    ).strip()
+    # --------------------------------------------------------
+    # Lesson card
+    # --------------------------------------------------------
+    lesson = str(story.get("lesson", "")).strip()
 
     overlay = Image.new(
         "RGBA",
@@ -1212,17 +1394,14 @@ def render_frame(story, scene_no, local_t, scene_duration, total_duration):
     )
     odraw = ImageDraw.Draw(overlay)
 
+    # Card is intentionally less opaque so the animation remains visible.
     card_alpha = int(
-        225 * clamp(
-            (local_t - .4) / 1.0,
-            0,
-            1,
-        )
+        205 * clamp((t - .12) / .55, 0, 1)
     )
 
     rounded(
         odraw,
-        [60, 570, WIDTH-60, 690],
+        [55, 575, WIDTH-55, 692],
         22,
         fill=(255,255,255,card_alpha),
         outline=(80,100,120,card_alpha),
@@ -1233,16 +1412,13 @@ def render_frame(story, scene_no, local_t, scene_duration, total_duration):
         odraw,
         "Lesson: " + lesson,
         LESSON_FONT,
-        WIDTH-170,
+        WIDTH-165,
     )
 
-    y = 588
-
+    y = 589
     for line in lesson_lines[:3]:
         bbox = odraw.textbbox(
-            (0,0),
-            line,
-            font=LESSON_FONT,
+            (0,0), line, font=LESSON_FONT
         )
         x = (WIDTH - (bbox[2]-bbox[0])) / 2
 
@@ -1252,17 +1428,16 @@ def render_frame(story, scene_no, local_t, scene_duration, total_duration):
             font=LESSON_FONT,
             fill=(40,50,65,card_alpha),
         )
-
         y += 27
 
-    image = alpha_layer(
-        image,
-        overlay,
-    )
+    image = alpha_layer(image, overlay)
 
-    return image
+    # Scene transition fade.
+    return draw_scene_transition_overlay(image, t, scene_no)
 
 
+# ============================================================
+# AUDIO
 # ============================================================
 # AUDIO
 # ============================================================
@@ -1323,88 +1498,103 @@ def format_timestamp(seconds):
 
 
 def create_subtitles(story, duration):
-    parts = []
+    """
+    Create subtitles using the actual story structure instead of splitting
+    the entire episode into equal six-word chunks.
 
-    for scene in story.get("scenes", []):
-        narration = str(
-            scene.get("narration", "")
-        ).strip()
+    Each scene gets a time range proportional to its spoken word count.
+    The song and ending then receive their own ranges. Within each range,
+    short subtitle chunks are timed proportionally by word count.
+    """
+    segments = []
 
+    for i, scene in enumerate(story.get("scenes", []), 1):
+        narration = str(scene.get("narration", "")).strip()
         if narration:
-            parts.append(narration)
+            segments.append({
+                "label": f"Scene {i}",
+                "text": narration,
+            })
 
     song = story.get("song", {})
-
     if isinstance(song, dict):
-        lyrics = str(
-            song.get("lyrics", "")
-        ).strip()
-
+        lyrics = str(song.get("lyrics", "")).strip()
         if lyrics:
-            parts.append(lyrics)
+            segments.append({
+                "label": "Song",
+                "text": lyrics,
+            })
 
-    ending = str(
-        story.get("ending", "")
-    ).strip()
-
+    ending = str(story.get("ending", "")).strip()
     if ending:
-        parts.append(ending)
+        segments.append({
+            "label": "Ending",
+            "text": ending,
+        })
 
-    full_text = " ".join(parts).strip()
-    words = full_text.split()
-
-    if not words:
+    if not segments:
         return
 
-    # Child-friendly subtitle chunks.
-    chunk_size = 6
+    total_words = sum(
+        max(1, len(segment["text"].split()))
+        for segment in segments
+    )
 
-    chunks = [
-        words[i:i+chunk_size]
-        for i in range(
-            0,
-            len(words),
-            chunk_size,
-        )
-    ]
+    cursor = 0.0
+    cues = []
 
-    chunk_duration = duration / len(chunks)
+    for segment in segments:
+        words = segment["text"].split()
+        count = max(1, len(words))
+        segment_duration = duration * count / total_words
 
-    with open(
-        SRT_FILE,
-        "w",
-        encoding="utf-8",
-    ) as file:
+        start_segment = cursor
+        end_segment = min(duration, cursor + segment_duration)
+        cursor = end_segment
 
-        for index, chunk in enumerate(
-            chunks,
-            1,
-        ):
-            start = (
-                index-1
-            ) * chunk_duration
+        chunk_size = 6
+        chunks = [
+            words[i:i + chunk_size]
+            for i in range(0, len(words), chunk_size)
+        ]
 
-            end = min(
-                duration,
-                index * chunk_duration,
+        chunk_words = sum(len(chunk) for chunk in chunks)
+        local_cursor = start_segment
+
+        for chunk in chunks:
+            chunk_duration = (
+                (end_segment - start_segment)
+                * len(chunk)
+                / max(1, chunk_words)
             )
 
-            file.write(
-                f"{index}\n"
+            cue_end = min(
+                end_segment,
+                local_cursor + chunk_duration,
             )
 
+            cues.append(
+                (
+                    local_cursor,
+                    cue_end,
+                    " ".join(chunk),
+                )
+            )
+
+            local_cursor = cue_end
+
+    with open(SRT_FILE, "w", encoding="utf-8") as file:
+        for index, (start, end, caption) in enumerate(cues, 1):
+            file.write(f"{index}\n")
             file.write(
-                f"{format_timestamp(start)}"
-                f" --> "
+                f"{format_timestamp(start)} --> "
                 f"{format_timestamp(end)}\n"
             )
-
-            file.write(
-                " ".join(chunk)
-            )
+            file.write(caption)
             file.write("\n\n")
 
-
+# ============================================================
+# VIDEO RENDER
 # ============================================================
 # VIDEO RENDER
 # ============================================================
