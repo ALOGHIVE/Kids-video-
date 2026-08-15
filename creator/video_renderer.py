@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 # ============================================================
-# NOBINEST 2D MOTION RENDERER v7
+# NOBINEST 2D MOTION RENDERER v8 FINAL
 # ============================================================
 # Fully procedural 2D animation.
 #
@@ -37,6 +37,9 @@ FPS = 24
 GROUND_Y = 525
 MAX_DURATION = 90.0
 MIN_DURATION = 60.0
+
+# Current frame zoom, used by prop drawing helpers.
+current_zoom = (1.0,)
 
 
 # ============================================================
@@ -717,77 +720,139 @@ def draw_cup(draw, x, y, scale=1.0):
     draw.arc([x+25*s,y-20*s,x+75*s,y+35*s], 270, 90, fill=(60,80,100), width=max(2,int(5*s)))
 
 
-def draw_story_objects(draw, story, scene, t):
-    """
-    Render concrete props from THIS scene, not from the entire story.
-    Every important noun in the AI visual description gets a visible prop.
+def draw_scene_props(draw, story, scene, t, world_point, foreground=False):
+    """Draw the concrete props described by THIS scene.
+
+    All prop coordinates use the same world coordinate system as the characters.
+    This is critical: props and characters must move together when the camera pans/zooms.
     """
     text = scene_text(story, scene)
 
-    # Grounded positions keep props close to the characters and inside frame.
-    if "ball" in text:
-        if "big" in text or "large" in text or "very big" in text:
-            big_color = find_color(text, (225,55,55))
-            # Scene 1: hero oversized ball.
-            if scene == 1:
-                x = 690 + 10*math.sin(t*1.2)
-                y = 455 + 5*math.sin(t*2)
-                draw_ball(draw, x, y, 112, big_color)
-            # Scene 2: keep the big ball visible for the comparison.
-            elif scene == 2:
-                draw_ball(draw, 465, 455, 108, (225,55,55))
-        if ("small" in text or "tiny" in text) and scene == 2:
-            small_color = find_color(text, (65,125,235))
-            # Tiny ball is deliberately drawn near Mimi's hand.
-            x = 635 + 10*math.sin(t*2)
-            y = 405 - 7*max(0, math.sin(t*5))
-            draw_ball(draw, x, y, 30, small_color)
+    def P(x, y):
+        return world_point(x, y)
 
-    if "hat" in text:
-        # Giant sun hat on the ground.
-        if any(w in text for w in ("giant", "very big", "big")):
-            draw_hat(draw, 1040, 475, 1.05, (248,205,70), True)
-        # Tiny hat is added after Kiki is drawn in draw_story_interactions.
+    def prop_ball(x, y, r, color):
+        px, py = P(x, y)
+        draw_ball(draw, px, py, r * current_zoom[0], color)
 
-    if "flower" in text:
-        if "big" in text or "large" in text:
-            draw_flower(draw, 820, 390, 1.35, (245,125,90))
-        if "small" in text or "tiny" in text:
-            draw_flower(draw, 700, 430, .55, (105,155,240))
+    def prop_hat(x, y, scale, color):
+        px, py = P(x, y)
+        draw_hat(draw, px, py, scale * current_zoom[0], color, True)
 
-    if "watermelon" in text:
-        draw_watermelon(draw, 760, 435, 0.95 if ("big" in text or "large" in text) else .65)
+    # Scene 1: the huge red ball is the hero prop. It stays close enough to Bobo
+    # that his reaching/hugging animation reads as an interaction, not decoration.
+    if scene == 1 and "ball" in text and not foreground:
+        color = find_color(text, (225, 55, 55))
+        px, py = P(520, 425)
+        draw_ball(draw, px, py, 112 * current_zoom[0], color)
 
-    if "strawberry" in text:
-        draw_strawberry(draw, 690, 430, 0.55 if ("small" in text or "tiny" in text) else .8)
+    # Scene 2: keep the big ball for the comparison and put Mimi's tiny blue ball
+    # exactly beside her hand.
+    if scene == 2 and "ball" in text and not foreground:
+        px, py = P(485, 425)
+        draw_ball(draw, px, py, 108 * current_zoom[0], (225, 55, 55))
 
-    if "leaf" in text:
-        draw_leaf(draw, 820, 430, .9)
+    if scene == 2 and "ball" in text and foreground:
+        mx, my = character_positions(scene, t, max(1.0, 15.0))["Mimi"]
+        # Mimi's right hand is around x+70, y+145 in her local drawing.
+        sx = mx + 76
+        sy = my + 145 - 5 * max(0, math.sin(t * 5))
+        px, py = P(sx, sy)
+        draw_ball(draw, px, py, 29 * current_zoom[0], (65, 125, 235))
+        # A small hand/finger cue makes it unmistakable that Mimi is holding it.
+        draw.ellipse(
+            [px-34*current_zoom[0], py+18*current_zoom[0],
+             px-18*current_zoom[0], py+34*current_zoom[0]],
+            fill=(250,250,250), outline=(205,205,205),
+            width=max(1, int(2*current_zoom[0]))
+        )
 
-    if "book" in text:
-        draw_book(draw, 650, 445, .8)
+    # Scene 3: the giant sun hat is on the ground. The tiny purple hat is drawn
+    # later, after Kiki, so it visibly sits on Kiki's head.
+    if scene == 3 and "hat" in text and not foreground:
+        px, py = P(900, 485)
+        draw_hat(draw, px, py, 1.15 * current_zoom[0], (248, 205, 70), True)
 
-    if "cup" in text:
-        draw_cup(draw, 650, 450, .8)
+    if scene == 3 and "hat" in text and foreground:
+        kx, ky = character_positions(scene, t, 15.0)["Kiki"]
+        # Kiki's head top is approximately ky-20, so place the hat crown above it.
+        px, py = P(kx, ky - 30)
+        draw_hat(draw, px, py, .34 * current_zoom[0], (155, 90, 210), True)
 
-    if "basket" in text:
-        draw_basket(draw, 565, 465, .72, 0)
+    # Other concrete objects supported by the story generator.
+    if scene not in (1, 2, 3):
+        if "flower" in text:
+            px, py = P(760, 430)
+            draw_flower(draw, px, py, .9 * current_zoom[0])
+        if "watermelon" in text:
+            px, py = P(700, 430)
+            scale = 1.0 if any(w in text for w in ("big", "large", "very big")) else .7
+            draw_watermelon(draw, px, py, scale * current_zoom[0])
+        if "strawberry" in text:
+            px, py = P(680, 440)
+            scale = .55 if any(w in text for w in ("small", "tiny")) else .8
+            draw_strawberry(draw, px, py, scale * current_zoom[0])
+        if "leaf" in text:
+            px, py = P(760, 430)
+            draw_leaf(draw, px, py, .9 * current_zoom[0])
+        if "book" in text:
+            px, py = P(650, 445)
+            draw_book(draw, px, py, .8 * current_zoom[0])
+        if "cup" in text:
+            px, py = P(650, 450)
+            draw_cup(draw, px, py, .8 * current_zoom[0])
+        if "basket" in text:
+            px, py = P(650, 465)
+            draw_basket(draw, px, py, .72 * current_zoom[0], 0)
+        if "apple" in text:
+            for i, x in enumerate((760, 850, 940)):
+                px, py = P(x, 360 + 10*math.sin(t*2+i))
+                draw_apple(draw, px, py, .55 * current_zoom[0])
 
-    if "apple" in text:
-        # Always make the apples visible in the current scene.
-        for i, x in enumerate((900, 975, 1050)):
-            draw_apple(draw, x, 330 + 12*math.sin(t*2+i), .55)
 
-    # A simple visual size comparison appears only when the story is truly abstract.
-    if not any(w in text for w in (
-        "ball","hat","flower","watermelon","strawberry","leaf",
-        "book","cup","basket","apple"
-    )):
-        lesson = str(story.get("lesson","")).lower()
-        if "big" in lesson and "small" in lesson:
-            draw_ball(draw, 575, 445, 90, (225,75,75))
-            draw_ball(draw, 720, 470, 38, (65,125,235))
+def draw_action_effects(draw, story, scene, t):
+    """Action effects that reinforce what the characters are doing."""
+    descriptions = scene_text(story, scene)
 
+    if any(w in descriptions for w in ("reach", "reaches", "hug", "hugs", "hold", "holding")):
+        for i in range(4):
+            a = t * 4 + i * 1.57
+            x = 500 + math.cos(a) * 30
+            y = 335 + math.sin(a) * 18
+            draw.ellipse([x-3, y-3, x+3, y+3], fill=(255,235,100))
+
+    if any(w in descriptions for w in ("flies", "fly", "flying", "flies down", "lands")):
+        for i in range(3):
+            x = 850 + i*18 + 10*math.sin(t*3+i)
+            y = 310 + i*15
+            draw.arc([x-12,y-8,x+12,y+8], 190, 350, fill=(255,255,255), width=2)
+
+
+def draw_lesson_object(draw, lesson, scene, t, focus=0):
+    text = str(lesson).lower()
+    if any(w in text for w in ("count", "number", "numbers", "one", "two", "three")):
+        for i in range(3):
+            x = 510 + i*130
+            y = 400 + 10*math.sin(t*2+i)
+            draw.ellipse([x-38, y-38, x+38, y+38], fill=(245,180,70))
+            text_center(draw, str(i+1), x, y-23, get_font(32, True), (70,70,90))
+    elif any(w in text for w in ("shape", "circle", "square", "triangle")):
+        x1, x2, x3 = 485, 640, 795
+        ys = [400+10*math.sin(t*2+i) for i in range(3)]
+        draw.ellipse([x1-38,ys[0]-38,x1+38,ys[0]+38],fill=(90,160,230))
+        draw.rectangle([x2-38,ys[1]-38,x2+38,ys[1]+38],fill=(245,170,70))
+        draw.polygon([(x3,ys[2]-45),(x3-45,ys[2]+38),(x3+45,ys[2]+38)],fill=(100,190,110))
+    elif any(w in text for w in ("color", "colour", "red", "blue", "green", "yellow")):
+        colors=[(235,70,70),(70,120,235),(70,180,100),(250,210,50)]
+        for i,color in enumerate(colors):
+            x=430+i*115; y=405+9*math.sin(t*2.1+i)
+            draw.ellipse([x-32,y-32,x+32,y+32],fill=color)
+    else:
+        for i in range(5):
+            x=440+i*105; y=405+12*math.sin(t*1.8+i)
+            r=28; fill=(248,204,70)
+            if i==int(focus)%5: r=35+4*math.sin(t*4); fill=(255,235,90)
+            draw_star(draw,x,y,r,fill)
 
 
 def draw_action_effects(draw, story, scene, t):
@@ -907,28 +972,33 @@ def character_positions(scene, t, duration):
     p = clamp(t / max(duration, .001), 0, 1)
 
     if scene == 1:
-        bobo_x = lerp(-170, 350, ease_out(clamp(t/3.5, 0, 1)))
-        mimi_x = 670
-        kiki_x = 970
-        kiki_y = 285 + 25*math.sin(t*2.0)
-
+        # Bobo enters and finishes close to the giant ball.
+        bobo_x = lerp(180, 395, ease_out(clamp(t/2.5, 0, 1)))
+        mimi_x = 735
+        kiki_x = 1030
+        kiki_y = 300 + 20*math.sin(t*2.0)
     elif scene == 2:
-        bobo_x = lerp(350, 455, smoothstep(p))
-        mimi_x = lerp(670, 620, smoothstep(p))
-        kiki_x = lerp(970, 820, smoothstep(p))
-        kiki_y = 285 + 30*math.sin(t*2.5)
-
+        bobo_x = 405 + 18*math.sin(t*1.3)
+        mimi_x = lerp(760, 650, smoothstep(p))
+        kiki_x = 1010 - 80*smoothstep(p)
+        kiki_y = 290 + 22*math.sin(t*2.5)
     elif scene == 3:
-        bobo_x = lerp(455, 390, smoothstep(p))
-        mimi_x = lerp(620, 700, smoothstep(p))
-        kiki_x = 900 + 80*math.sin(t*.9)
-        kiki_y = 235 + 50*math.sin(t*1.7)
-
+        # Kiki flies directly to Bobo's head and settles there.
+        bobo_x = 390 + 8*math.sin(t*0.8)
+        mimi_x = 680 + 12*math.sin(t*0.7)
+        land = smoothstep(clamp((t-1.0)/2.2, 0, 1))
+        fly_x = lerp(980, bobo_x, land)
+        fly_y = lerp(185, 145, land) + 12*math.sin(t*4)*(1-land)
+        kiki_x = fly_x
+        kiki_y = fly_y
     else:
-        bobo_x = lerp(390, 450, smoothstep(p))
-        mimi_x = lerp(700, 650, smoothstep(p))
-        kiki_x = lerp(900, 820, smoothstep(p))
-        kiki_y = 255 + 35*math.sin(t*1.8)
+        # Keep the full group on screen. They dance in place with alternating
+        # hops and side-to-side sway instead of orbiting off-screen.
+        sway = 35 * math.sin(t*1.4)
+        bobo_x = 430 + sway
+        mimi_x = 640 - sway*0.35
+        kiki_x = 850 + sway*0.55
+        kiki_y = 235 + 18*math.sin(t*4.0)
 
     return {
         "Bobo": (bobo_x, 275),
@@ -937,112 +1007,102 @@ def character_positions(scene, t, duration):
     }
 
 
-
-# ============================================================
-# EXPLICIT CHARACTER / OBJECT INTERACTIONS
-# ============================================================
-
-
-def draw_story_interactions(draw, story, scene, t, positions, camera_x, zoom):
-    """Overlay hands/held props so the narration and picture agree."""
-    text = scene_text(story, scene)
-
+def draw_story_interactions(draw, story, scene, t, positions, world_point, zoom):
+    """Foreground interaction layer. Props are attached to the correct actor."""
     bx, by = positions["Bobo"]
     mx, my = positions["Mimi"]
     kx, ky = positions["Kiki"]
 
-    # Scene 1: Bobo visibly approaches the huge ball and hugs it.
-    if scene == 1 and "ball" in text:
-        progress = clamp(t / 3.5, 0, 1)
-        ball_x = 690 + 10*math.sin(t*1.2)
-        ball_y = 455 + 5*math.sin(t*2)
-        # Two curved arms toward the ball.
-        draw.line(
-            [(bx-70, by+125), (ball_x-75, ball_y-20)],
-            fill=(154,96,57), width=18
-        )
-        draw.line(
-            [(bx+70, by+125), (ball_x+75, ball_y-20)],
-            fill=(154,96,57), width=18
-        )
-        # Small motion lines as Bobo reaches.
-        if progress < .9:
-            for off in (-18, 0, 18):
-                draw.arc(
-                    [ball_x-130+off, ball_y-130,
-                     ball_x+130+off, ball_y+130],
-                    205, 250, fill=(255,245,120), width=3
-                )
+    def P(x, y):
+        return world_point(x, y)
 
-    # Scene 2: tiny blue ball is explicitly held by Mimi.
-    if scene == 2 and "ball" in text:
-        sx = mx + 72
-        sy = my + 142 - 8*max(0, math.sin(t*5))
-        draw_ball(draw, sx, sy, 28, (65,125,235))
+    if scene == 1:
+        # Foreground hug cues. Ball itself is behind Bobo; hands/arms come over it.
+        ball_x, ball_y = 520, 425
+        bpx, bpy = P(bx, by)
+        cx, cy = P(ball_x, ball_y)
+        # Only make the reaching lines visible while Bobo is approaching.
+        progress = clamp(t/2.5, 0, 1)
+        reach = clamp(progress/0.65, 0, 1)
+        left_end = (lerp(bpx-45*zoom, cx-70*zoom, reach), lerp(bpy+145*zoom, cy-20*zoom, reach))
+        right_end = (lerp(bpx+45*zoom, cx+70*zoom, reach), lerp(bpy+145*zoom, cy-5*zoom, reach))
+        draw.line([(bpx-45*zoom,bpy+145*zoom),left_end], fill=(154,96,57), width=max(8,int(16*zoom)))
+        draw.line([(bpx+45*zoom,bpy+145*zoom),right_end], fill=(154,96,57), width=max(8,int(16*zoom)))
+        for ex, ey in (left_end, right_end):
+            draw.ellipse([ex-9*zoom,ey-9*zoom,ex+9*zoom,ey+9*zoom], fill=(184,124,76))
 
-    # Scene 3: Kiki wears the tiny hat. The giant hat stays on the ground.
-    if scene == 3 and "hat" in text:
-        draw_hat(draw, kx, ky+5, .34, (155,90,210), True)
-        # Pointing gesture toward the giant hat.
-        draw.line(
-            [(kx-35, ky+105), (1040, 450)],
-            fill=(55,125,220), width=7
-        )
+    elif scene == 2:
+        # Mimi's hand is visibly under the tiny ball.
+        sx, sy = P(mx+76, my+145 - 5*max(0,math.sin(t*5)))
+        draw.ellipse([sx-16*zoom,sy+15*zoom,sx+2*zoom,sy+32*zoom],fill=(250,250,250),outline=(205,205,205),width=max(1,int(2*zoom)))
 
-    # Scene 4: readable dance motion.
-    if scene == 4:
-        bounce = 18*abs(math.sin(t*5))
-        for x in (bx-65, bx+65, mx-65, mx+65):
-            draw.arc([x-18, 420-bounce, x+18, 460-bounce],
-                     190, 350, fill=(255,225,90), width=4)
+    elif scene == 3:
+        # Tiny hat is attached to Kiki's head.
+        hx, hy = P(kx, ky-32)
+        draw_hat(draw, hx, hy, .34*zoom, (155,90,210), True)
+        # Pointing wing cue toward the giant hat on the ground.
+        startx, starty = P(kx+70, ky+85)
+        endx, endy = P(900, 440)
+        draw.line([(startx,starty),(endx,endy)], fill=(55,145,220), width=max(5,int(8*zoom)))
+        draw.ellipse([endx-7*zoom,endy-7*zoom,endx+7*zoom,endy+7*zoom],fill=(55,145,220))
 
+    elif scene == 4:
+        # Hand/wings-up cues for a readable group dance.
+        for x,y,phase in ((bx,275,0),(mx,280,1.5)):
+            px,py=P(x,y)
+            bounce=20*abs(math.sin(t*5+phase))
+            draw.arc([px-75*zoom,py+60*zoom-bounce,px-25*zoom,py+125*zoom-bounce],190,350,fill=(255,225,90),width=max(3,int(5*zoom)))
+            draw.arc([px+25*zoom,py+55*zoom-bounce,px+75*zoom,py+120*zoom-bounce],190,350,fill=(255,225,90),width=max(3,int(5*zoom)))
 
 
 def render_frame(story, scene, t, scene_duration, total_duration):
+    global current_zoom
+
     frame = Image.new("RGB", (WIDTH, HEIGHT), (255,255,255))
     draw = ImageDraw.Draw(frame)
 
     camera_x, zoom = camera_state(scene, t)
+    current_zoom = (zoom,)
 
     draw_background(draw, scene, t, camera_x)
 
-    # Story-specific props are drawn first so characters can interact with them.
-    draw_story_objects(draw, story, scene, t)
-    lesson = str(story.get("lesson", "")).lower()
-    concrete_story = any(
-        w in (" ".join(str(s.get("visual_description","")) for s in story.get("scenes", []))).lower()
-        for w in ("apple", "basket", "tree", "ball", "flower", "book", "toy", "cup", "leaf", "hat", "watermelon", "strawberry")
-    )
-    if not concrete_story:
-        draw_lesson_object(
-            draw,
-            story.get("lesson", ""),
-            scene,
-            t,
-            focus=int(t*1.2),
+    # One coordinate system for everything. This prevents the old bug where
+    # props stayed fixed while characters moved with the camera.
+    def world_point(x, y):
+        return (
+            WIDTH/2 + (x - WIDTH/2 - camera_x)*zoom,
+            GROUND_Y + (y - GROUND_Y)*zoom,
         )
-    draw_action_effects(draw, story, scene, t)
-    draw_particles(draw, t, scene)
 
     positions = character_positions(scene, t, scene_duration)
 
-    # Scene-specific gestures.
-    bobo_gesture = 0.0
-    mimi_gesture = 0.0
+    # Concrete scene props behind characters.
+    prop_layer = Image.new("RGBA", (WIDTH, HEIGHT), (0,0,0,0))
+    pd = ImageDraw.Draw(prop_layer)
+    draw_scene_props(pd, story, scene, t, world_point, foreground=False)
+    frame = Image.alpha_composite(frame.convert("RGBA"), prop_layer).convert("RGB")
 
+    # Effects behind the characters.
+    fx = Image.new("RGBA", (WIDTH, HEIGHT), (0,0,0,0))
+    fd = ImageDraw.Draw(fx)
+    draw_action_effects(fd, story, scene, t)
+    draw_particles(fd, t, scene)
+    frame = Image.alpha_composite(frame.convert("RGBA"), fx).convert("RGB")
+
+    # Character gestures.
+    bobo_gesture = .0
+    mimi_gesture = .0
     if scene == 1:
-        bobo_gesture = .45 + .12*math.sin(t*2)
+        bobo_gesture = .55 + .12*math.sin(t*2)
     elif scene == 2:
-        bobo_gesture = .18
-        mimi_gesture = -.35
+        mimi_gesture = -.35 + .15*math.sin(t*3)
     elif scene == 3:
         bobo_gesture = -.15
-        mimi_gesture = -.5
+        mimi_gesture = -.25
     else:
-        bobo_gesture = .35
-        mimi_gesture = .25
+        bobo_gesture = .35 + .55*math.sin(t*5)
+        mimi_gesture = .25 + .55*math.sin(t*5+1.5)
 
-    # Draw characters into a transparent world layer.
     world = Image.new("RGBA", (WIDTH, HEIGHT), (0,0,0,0))
     wd = ImageDraw.Draw(world)
 
@@ -1050,117 +1110,41 @@ def render_frame(story, scene, t, scene_duration, total_duration):
     mx, my = positions["Mimi"]
     kx, ky = positions["Kiki"]
 
-    # Apply actual camera zoom and pan.
-    def world_point(x, y):
-        return (
-            WIDTH/2 + (x - WIDTH/2 - camera_x)*zoom,
-            GROUND_Y + (y - GROUND_Y)*zoom,
-        )
+    def wp(x,y):
+        return world_point(x,y)
 
-    bxp, byp = world_point(bx, by)
-    mxp, myp = world_point(mx, my)
-    kxp, kyp = world_point(kx, ky)
+    bxp,byp=wp(bx,by)
+    mxp,myp=wp(mx,my)
+    kxp,kyp=wp(kx,ky)
 
     if scene == 4:
-        bobo_bounce = 20*abs(math.sin(t*5.0))
-        mimi_bounce = 18*abs(math.sin(t*5.0 + 1.2))
-        bobo_gesture = 0.35 + 0.65*math.sin(t*5.0)
-        mimi_gesture = 0.25 + 0.55*math.sin(t*5.0 + 1.5)
+        bobo_bounce=20*abs(math.sin(t*5.0))
+        mimi_bounce=18*abs(math.sin(t*5.0+1.2))
     else:
-        bobo_bounce = 6*math.sin(t*7)
-        mimi_bounce = 4*math.sin(t*5.5)
+        bobo_bounce=5*math.sin(t*6.5)
+        mimi_bounce=4*math.sin(t*5.5)
 
-    draw_bobo(
-        wd,
-        bxp,
-        byp + bobo_bounce*zoom,
-        scale=1.05*zoom,
-        phase=t*6.8,
-        wave=t*3.0,
-        gesture=bobo_gesture,
-    )
+    draw_bobo(wd,bxp,byp+bobo_bounce*zoom,scale=1.05*zoom,phase=t*6.8,wave=t*3.0,gesture=bobo_gesture)
+    draw_mimi(wd,mxp,myp+mimi_bounce*zoom,scale=1.02*zoom,phase=t*4.2,wave=t*2.2,gesture=mimi_gesture)
+    draw_kiki(wd,kxp,kyp,scale=.92*zoom,phase=t*7.0,flight=t)
 
-    draw_mimi(
-        wd,
-        mxp,
-        myp + mimi_bounce*zoom,
-        scale=1.02*zoom,
-        phase=t*4.2,
-        wave=t*2.2,
-        gesture=mimi_gesture,
-    )
+    frame=Image.alpha_composite(frame.convert("RGBA"),world).convert("RGB")
 
-    draw_kiki(
-        wd,
-        kxp,
-        kyp,
-        scale=.92*zoom,
-        phase=t*7.0,
-        flight=t,
-    )
+    # Foreground props and interaction cues. These are deliberately after the
+    # characters so held/worn props appear attached to them.
+    fg=Image.new("RGBA",(WIDTH,HEIGHT),(0,0,0,0))
+    fgd=ImageDraw.Draw(fg)
+    draw_scene_props(fgd,story,scene,t,world_point,foreground=True)
+    draw_story_interactions(fgd,story,scene,t,positions,world_point,zoom)
+    frame=Image.alpha_composite(frame.convert("RGBA"),fg).convert("RGB")
 
-    # Draw interaction details over the characters/world so objects visibly
-    # connect to the actions being narrated.
-    draw_story_interactions(
-        wd,
-        story,
-        scene,
-        t,
-        positions,
-        camera_x,
-        zoom,
-    )
+    # Title.
+    title=str(story.get("title","NobiNest Adventure"))
+    if len(title)>48: title=title[:45]+"..."
+    text_center(ImageDraw.Draw(frame),title,WIDTH/2,18,TITLE_FONT,(55,70,90))
 
-    frame = Image.alpha_composite(frame.convert("RGBA"), world).convert("RGB")
-
-    # Scene title.
-    title = str(story.get("title", "NobiNest Adventure"))
-    if len(title) > 48:
-        title = title[:45] + "..."
-
-    text_center(
-        ImageDraw.Draw(frame),
-        title,
-        WIDTH/2,
-        18,
-        TITLE_FONT,
-        (55,70,90),
-    )
-
-    # Avoid a large lesson card behind subtitles. For concrete stories,
-    # keep the frame clean and let the narration/subtitles carry the lesson.
-    concrete_story = any(
-        w in (" ".join(
-            str(s.get("visual_description","")) for s in story.get("scenes", [])
-        )).lower()
-        for w in ("apple","basket","tree","ball","flower","book","toy","cup","leaf","hat","watermelon","strawberry")
-    )
-
-    if not concrete_story:
-        badge = Image.new("RGBA", (WIDTH, HEIGHT), (0,0,0,0))
-        bd = ImageDraw.Draw(badge)
-        rounded(
-            bd,
-            [55, 575, WIDTH-55, 660],
-            18,
-            (255,255,255,220),
-            (70,90,110,220),
-            2,
-        )
-        lines = wrap_text(
-            bd,
-            "Lesson: " + str(story.get("lesson","")),
-            LESSON_FONT,
-            WIDTH-150,
-        )
-        y = 590
-        for line in lines[:2]:
-            text_center(bd, line, WIDTH/2, y, LESSON_FONT, (40,50,65,220))
-            y += 27
-        frame = Image.alpha_composite(frame.convert("RGBA"), badge).convert("RGB")
-
+    # Keep the actual scene unobstructed. Concrete stories do not need a lesson card.
     return frame
-
 
 # ============================================================
 # AUDIO / SUBTITLES
@@ -1260,7 +1244,7 @@ def create_subtitles(story, duration):
 
 def render_video(story, duration):
     print("==============================================")
-    print("NOBINEST 2D MOTION RENDERER v7")
+    print("NOBINEST 2D MOTION RENDERER v8 FINAL")
     print("==============================================")
     print(f"Resolution : {WIDTH}x{HEIGHT}")
     print(f"FPS        : {FPS}")
