@@ -455,7 +455,7 @@ def draw_kiki(draw, x, y, scale=1.0, phase=0.0, flight=0.0,
     draw.ellipse(
         [x+5*s, y+183*s, x+46*s, y+210*s],
         fill=orange,
-        )
+)
 
 
 # ============================================================
@@ -721,94 +721,156 @@ def draw_cup(draw, x, y, scale=1.0):
 
 
 def draw_scene_props(draw, story, scene, t, world_point, foreground=False):
-    """Draw the concrete props described by THIS scene.
+    """Render the concrete objects described by the CURRENT scene.
 
-    All prop coordinates use the same world coordinate system as the characters.
-    This is critical: props and characters must move together when the camera pans/zooms.
+    This version is deliberately scene-text driven. It does not assume that
+    scene 1 is a ball story, scene 2 is a ball story, etc.
     """
     text = scene_text(story, scene)
+    scenes = story.get("scenes", [])
+    raw = scenes[scene-1].get("visual_description", "").lower() if 1 <= scene <= len(scenes) else ""
 
     def P(x, y):
         return world_point(x, y)
 
-    def prop_ball(x, y, r, color):
-        px, py = P(x, y)
-        draw_ball(draw, px, py, r * current_zoom[0], color)
+    # Current actor positions in world coordinates.
+    positions = character_positions(scene, t, max(1.0, 15.0))
+    bx, by = positions["Bobo"]
+    mx, my = positions["Mimi"]
+    kx, ky = positions["Kiki"]
 
-    def prop_hat(x, y, scale, color):
-        px, py = P(x, y)
-        draw_hat(draw, px, py, scale * current_zoom[0], color, True)
+    # --------------------------------------------------------
+    # SCENE 1: baskets held by Bobo and Mimi
+    # --------------------------------------------------------
+    if scene == 1 and "basket" in text and foreground:
+        pbx, pby = P(bx, by + 150)
+        pmx, pmy = P(mx, my + 150)
 
-    # Scene 1: the huge red ball is the hero prop. It stays close enough to Bobo
-    # that his reaching/hugging animation reads as an interaction, not decoration.
-    if scene == 1 and "ball" in text and not foreground:
-        color = find_color(text, (225, 55, 55))
-        px, py = P(520, 425)
-        draw_ball(draw, px, py, 112 * current_zoom[0], color)
+        big_scale = 1.22
+        small_scale = .62
 
-    # Scene 2: keep the big ball for the comparison and put Mimi's tiny blue ball
-    # exactly beside her hand.
-    if scene == 2 and "ball" in text and not foreground:
-        px, py = P(485, 425)
-        draw_ball(draw, px, py, 108 * current_zoom[0], (225, 55, 55))
+        draw_basket(draw, pbx, pby, big_scale, 0)
+        draw_basket(draw, pmx, pmy, small_scale, 0)
 
-    if scene == 2 and "ball" in text and foreground:
-        mx, my = character_positions(scene, t, max(1.0, 15.0))["Mimi"]
-        # Mimi's right hand is around x+70, y+145 in her local drawing.
-        sx = mx + 76
-        sy = my + 145 - 5 * max(0, math.sin(t * 5))
-        px, py = P(sx, sy)
-        draw_ball(draw, px, py, 29 * current_zoom[0], (65, 125, 235))
-        # A small hand/finger cue makes it unmistakable that Mimi is holding it.
-        draw.ellipse(
-            [px-34*current_zoom[0], py+18*current_zoom[0],
-             px-18*current_zoom[0], py+34*current_zoom[0]],
-            fill=(250,250,250), outline=(205,205,205),
-            width=max(1, int(2*current_zoom[0]))
+        # Strong visual labels through size contrast.
+        draw.line(
+            [(pbx-55*big_scale, pby-35*big_scale),
+             (pbx+55*big_scale, pby-35*big_scale)],
+            fill=(125,75,40), width=max(3, int(5*big_scale))
+        )
+        draw.line(
+            [(pmx-28*small_scale, pmy-25*small_scale),
+             (pmx+28*small_scale, pmy-25*small_scale)],
+            fill=(125,75,40), width=max(2, int(4*small_scale))
         )
 
-    # Scene 3: the giant sun hat is on the ground. The tiny purple hat is drawn
-    # later, after Kiki, so it visibly sits on Kiki's head.
-    if scene == 3 and "hat" in text and not foreground:
-        px, py = P(900, 485)
-        draw_hat(draw, px, py, 1.15 * current_zoom[0], (248, 205, 70), True)
+    # --------------------------------------------------------
+    # SCENE 2: the same baskets + two apples with clear size contrast
+    # --------------------------------------------------------
+    if scene == 2 and "basket" in text and foreground:
+        pbx, pby = P(bx, by + 150)
+        pmx, pmy = P(mx, my + 150)
+        draw_basket(draw, pbx, pby, 1.22, 1)
+        draw_basket(draw, pmx, pmy, .62, 1)
 
+    if scene == 2 and "apple" in text and foreground:
+        # Big apple travels from Kiki to Bobo's basket.
+        progress_big = smoothstep(clamp((t-2.0)/4.0, 0, 1))
+        progress_small = smoothstep(clamp((t-5.0)/4.0, 0, 1))
+
+        kstart = (kx, ky + 80)
+        big_target = (bx, by + 165)
+        small_target = (mx, my + 165)
+
+        big_x = lerp(kstart[0], big_target[0], progress_big)
+        big_y = lerp(kstart[1], big_target[1], progress_big) - 80*math.sin(progress_big*math.pi)
+        small_x = lerp(kstart[0]+25, small_target[0], progress_small)
+        small_y = lerp(kstart[1]+15, small_target[1], progress_small) - 60*math.sin(progress_small*math.pi)
+
+        draw_apple(*(
+            draw, *P(big_x, big_y)
+        ), .92 * current_zoom[0], 0)
+        draw_apple(*(
+            draw, *P(small_x, small_y)
+        ), .48 * current_zoom[0], 0)
+
+        # Front rims make the apples read as being inside the baskets.
+        for x, y, scale in ((bx, by+150, 1.22), (mx, my+150, .62)):
+            px, py = P(x, y)
+            s = scale * current_zoom[0]
+            draw.arc([px-80*s, py-25*s, px+80*s, py+35*s],
+                     0, 180, fill=(125,75,40), width=max(3,int(5*s)))
+
+    # --------------------------------------------------------
+    # SCENE 3: Bobo and Mimi wear the two hats.
+    # --------------------------------------------------------
     if scene == 3 and "hat" in text and foreground:
-        kx, ky = character_positions(scene, t, 15.0)["Kiki"]
-        # Kiki's head top is approximately ky-20, so place the hat crown above it.
-        px, py = P(kx, ky - 30)
-        draw_hat(draw, px, py, .34 * current_zoom[0], (155, 90, 210), True)
+        # Bobo's very large yellow hat.
+        bhx, bhy = P(bx, by - 10)
+        draw_hat(draw, bhx, bhy, .82 * current_zoom[0], (248,205,70), True)
 
-    # Other concrete objects supported by the story generator.
-    if scene not in (1, 2, 3):
-        if "flower" in text:
-            px, py = P(760, 430)
-            draw_flower(draw, px, py, .9 * current_zoom[0])
-        if "watermelon" in text:
-            px, py = P(700, 430)
-            scale = 1.0 if any(w in text for w in ("big", "large", "very big")) else .7
-            draw_watermelon(draw, px, py, scale * current_zoom[0])
-        if "strawberry" in text:
-            px, py = P(680, 440)
-            scale = .55 if any(w in text for w in ("small", "tiny")) else .8
-            draw_strawberry(draw, px, py, scale * current_zoom[0])
-        if "leaf" in text:
-            px, py = P(760, 430)
-            draw_leaf(draw, px, py, .9 * current_zoom[0])
-        if "book" in text:
-            px, py = P(650, 445)
-            draw_book(draw, px, py, .8 * current_zoom[0])
-        if "cup" in text:
-            px, py = P(650, 450)
-            draw_cup(draw, px, py, .8 * current_zoom[0])
-        if "basket" in text:
-            px, py = P(650, 465)
-            draw_basket(draw, px, py, .72 * current_zoom[0], 0)
-        if "apple" in text:
-            for i, x in enumerate((760, 850, 940)):
-                px, py = P(x, 360 + 10*math.sin(t*2+i))
-                draw_apple(draw, px, py, .55 * current_zoom[0])
+        # Mimi's small purple hat.
+        mhx, mhy = P(mx, my - 10)
+        draw_hat(draw, mhx, mhy, .43 * current_zoom[0], (155,90,210), True)
 
+    # --------------------------------------------------------
+    # Other described objects: handled generically for scenes that mention them.
+    # --------------------------------------------------------
+    if "watermelon" in text:
+        px, py = P(700, 430)
+        scale = 1.0 if any(w in text for w in ("big", "large", "very big", "giant")) else .7
+        draw_watermelon(draw, px, py, scale * current_zoom[0])
+
+    if "strawberry" in text:
+        px, py = P(680, 440)
+        scale = .55 if any(w in text for w in ("small", "tiny")) else .8
+        draw_strawberry(draw, px, py, scale * current_zoom[0])
+
+    if "leaf" in text:
+        px, py = P(760, 430)
+        draw_leaf(draw, px, py, .9 * current_zoom[0])
+
+    if "flower" in text:
+        px, py = P(760, 430)
+        draw_flower(draw, px, py, .9 * current_zoom[0])
+
+    if "book" in text:
+        px, py = P(650, 445)
+        draw_book(draw, px, py, .8 * current_zoom[0])
+
+    if "cup" in text:
+        px, py = P(650, 450)
+        draw_cup(draw, px, py, .8 * current_zoom[0])
+
+    # Generic basket fallback for future stories outside scenes 1/2.
+    if scene not in (1, 2) and "basket" in text and foreground:
+        px, py = P(650, 455)
+        draw_basket(draw, px, py, .8 * current_zoom[0], 0)
+
+    # Generic apple fallback for future stories.
+    if scene not in (2,) and "apple" in text:
+        px, py = P(760, 390)
+        draw_apple(draw, px, py, .65 * current_zoom[0], 0)
+
+    # Picnic blanket for scene descriptions that explicitly call for one.
+    if "blanket" in text and not foreground:
+        px, py = P(640, 500)
+        w = 390 * current_zoom[0]
+        h = 85 * current_zoom[0]
+        draw.rounded_rectangle(
+            [px-w, py-h, px+w, py+h],
+            radius=max(8, int(18*current_zoom[0])),
+            fill=(236,185,205),
+            outline=(170,105,140),
+            width=max(2, int(4*current_zoom[0])),
+        )
+        for xx in range(-2, 3):
+            x = px + xx * 120 * current_zoom[0]
+            draw.line(
+                [(x, py-h), (x, py+h)],
+                fill=(255,225,235),
+                width=max(2, int(3*current_zoom[0]))
+            )
 
 def draw_action_effects(draw, story, scene, t):
     """Action effects that reinforce what the characters are doing."""
@@ -972,33 +1034,30 @@ def character_positions(scene, t, duration):
     p = clamp(t / max(duration, .001), 0, 1)
 
     if scene == 1:
-        # Bobo enters and finishes close to the giant ball.
-        bobo_x = lerp(180, 395, ease_out(clamp(t/2.5, 0, 1)))
+        # Bobo and Mimi are staged apart so the two baskets are unmistakable.
+        bobo_x = lerp(180, 400, ease_out(clamp(t/2.5, 0, 1)))
         mimi_x = 735
         kiki_x = 1030
         kiki_y = 300 + 20*math.sin(t*2.0)
     elif scene == 2:
-        bobo_x = 405 + 18*math.sin(t*1.3)
-        mimi_x = lerp(760, 650, smoothstep(p))
-        kiki_x = 1010 - 80*smoothstep(p)
-        kiki_y = 290 + 22*math.sin(t*2.5)
+        # Kiki carries the apples from the right toward the two baskets.
+        bobo_x = 400 + 12*math.sin(t*1.2)
+        mimi_x = 735 + 10*math.sin(t*1.0 + 1)
+        kiki_x = lerp(1030, 910, smoothstep(clamp(t/5.0, 0, 1)))
+        kiki_y = lerp(245, 285, smoothstep(clamp(t/5.0, 0, 1))) + 24*math.sin(t*3)
     elif scene == 3:
-        # Kiki flies directly to Bobo's head and settles there.
-        bobo_x = 390 + 8*math.sin(t*0.8)
-        mimi_x = 680 + 12*math.sin(t*0.7)
-        land = smoothstep(clamp((t-1.0)/2.2, 0, 1))
-        fly_x = lerp(980, bobo_x, land)
-        fly_y = lerp(185, 145, land) + 12*math.sin(t*4)*(1-land)
-        kiki_x = fly_x
-        kiki_y = fly_y
+        # The hats belong to Bobo and Mimi. Kiki stays in the background.
+        bobo_x = 400 + 10*math.sin(t*.8)
+        mimi_x = 735 + 10*math.sin(t*.7)
+        kiki_x = 1030
+        kiki_y = 300 + 18*math.sin(t*2.0)
     else:
-        # Keep the full group on screen. They dance in place with alternating
-        # hops and side-to-side sway instead of orbiting off-screen.
-        sway = 35 * math.sin(t*1.4)
-        bobo_x = 430 + sway
-        mimi_x = 640 - sway*0.35
+        # Full group stays together for the picnic.
+        sway = 28 * math.sin(t*1.4)
+        bobo_x = 420 + sway
+        mimi_x = 650 - sway*0.35
         kiki_x = 850 + sway*0.55
-        kiki_y = 235 + 18*math.sin(t*4.0)
+        kiki_y = 190 + 24*math.sin(t*3.5)
 
     return {
         "Bobo": (bobo_x, 275),
@@ -1006,9 +1065,9 @@ def character_positions(scene, t, duration):
         "Kiki": (kiki_x, kiki_y),
     }
 
-
 def draw_story_interactions(draw, story, scene, t, positions, world_point, zoom):
-    """Foreground interaction layer. Props are attached to the correct actor."""
+    """Foreground interaction cues matched to the actual scene description."""
+    text = scene_text(story, scene)
     bx, by = positions["Bobo"]
     mx, my = positions["Mimi"]
     kx, ky = positions["Kiki"]
@@ -1016,43 +1075,40 @@ def draw_story_interactions(draw, story, scene, t, positions, world_point, zoom)
     def P(x, y):
         return world_point(x, y)
 
-    if scene == 1:
-        # Foreground hug cues. Ball itself is behind Bobo; hands/arms come over it.
-        ball_x, ball_y = 520, 425
-        bpx, bpy = P(bx, by)
-        cx, cy = P(ball_x, ball_y)
-        # Only make the reaching lines visible while Bobo is approaching.
-        progress = clamp(t/2.5, 0, 1)
-        reach = clamp(progress/0.65, 0, 1)
-        left_end = (lerp(bpx-45*zoom, cx-70*zoom, reach), lerp(bpy+145*zoom, cy-20*zoom, reach))
-        right_end = (lerp(bpx+45*zoom, cx+70*zoom, reach), lerp(bpy+145*zoom, cy-5*zoom, reach))
-        draw.line([(bpx-45*zoom,bpy+145*zoom),left_end], fill=(154,96,57), width=max(8,int(16*zoom)))
-        draw.line([(bpx+45*zoom,bpy+145*zoom),right_end], fill=(154,96,57), width=max(8,int(16*zoom)))
-        for ex, ey in (left_end, right_end):
-            draw.ellipse([ex-9*zoom,ey-9*zoom,ex+9*zoom,ey+9*zoom], fill=(184,124,76))
+    if scene == 1 and "basket" in text:
+        # Arms visually point toward the baskets.
+        for x, y, side in ((bx, by, -1), (mx, my, 1)):
+            px, py = P(x + side*55, y + 145)
+            tx, ty = P(x + side*20, y + 155)
+            draw.line(
+                [(px,py),(tx,ty)],
+                fill=(150,100,70) if x == bx else (245,245,245),
+                width=max(6, int(12*zoom))
+            )
 
-    elif scene == 2:
-        # Mimi's hand is visibly under the tiny ball.
-        sx, sy = P(mx+76, my+145 - 5*max(0,math.sin(t*5)))
-        draw.ellipse([sx-16*zoom,sy+15*zoom,sx+2*zoom,sy+32*zoom],fill=(250,250,250),outline=(205,205,205),width=max(1,int(2*zoom)))
+    elif scene == 2 and "apple" in text:
+        # A short wing-to-apple cue makes Kiki's carrying action readable.
+        ax, ay = P(kx, ky + 80)
+        draw.line(
+            [P(kx+42,ky+78), (ax, ay)],
+            fill=(55,145,220),
+            width=max(4,int(7*zoom))
+        )
 
-    elif scene == 3:
-        # Tiny hat is attached to Kiki's head.
-        hx, hy = P(kx, ky-32)
-        draw_hat(draw, hx, hy, .34*zoom, (155,90,210), True)
-        # Pointing wing cue toward the giant hat on the ground.
-        startx, starty = P(kx+70, ky+85)
-        endx, endy = P(900, 440)
-        draw.line([(startx,starty),(endx,endy)], fill=(55,145,220), width=max(5,int(8*zoom)))
-        draw.ellipse([endx-7*zoom,endy-7*zoom,endx+7*zoom,endy+7*zoom],fill=(55,145,220))
+    elif scene == 3 and "hat" in text:
+        # Tiny sparkle cues around both hats reinforce that they are being worn.
+        for x, y in ((bx,by-5),(mx,my-5)):
+            px, py = P(x, y-55)
+            r = 6*zoom
+            draw.line([(px-r,py),(px+r,py)], fill=(255,240,120), width=max(2,int(3*zoom)))
+            draw.line([(px,py-r),(px,py+r)], fill=(255,240,120), width=max(2,int(3*zoom)))
 
     elif scene == 4:
-        # Hand/wings-up cues for a readable group dance.
-        for x,y,phase in ((bx,275,0),(mx,280,1.5)):
-            px,py=P(x,y)
-            bounce=20*abs(math.sin(t*5+phase))
-            draw.arc([px-75*zoom,py+60*zoom-bounce,px-25*zoom,py+125*zoom-bounce],190,350,fill=(255,225,90),width=max(3,int(5*zoom)))
-            draw.arc([px+25*zoom,py+55*zoom-bounce,px+75*zoom,py+120*zoom-bounce],190,350,fill=(255,225,90),width=max(3,int(5*zoom)))
+        # Kiki's happy flight circle above the group.
+        cx, cy = P(650, 250)
+        rx, ry = 250*zoom, 85*zoom
+        draw.arc([cx-rx,cy-ry,cx+rx,cy+ry], 190, 350,
+                 fill=(90,160,230), width=max(2,int(4*zoom)))
 
 
 def render_frame(story, scene, t, scene_duration, total_duration):
@@ -1094,11 +1150,12 @@ def render_frame(story, scene, t, scene_duration, total_duration):
     mimi_gesture = .0
     if scene == 1:
         bobo_gesture = .55 + .12*math.sin(t*2)
+        mimi_gesture = .35 + .12*math.sin(t*2 + 1.0)
     elif scene == 2:
         mimi_gesture = -.35 + .15*math.sin(t*3)
     elif scene == 3:
-        bobo_gesture = -.15
-        mimi_gesture = -.25
+        bobo_gesture = .10 + .12*math.sin(t*2)
+        mimi_gesture = -.10 + .12*math.sin(t*2 + 1.0)
     else:
         bobo_gesture = .35 + .55*math.sin(t*5)
         mimi_gesture = .25 + .55*math.sin(t*5+1.5)
@@ -1145,6 +1202,7 @@ def render_frame(story, scene, t, scene_duration, total_duration):
 
     # Keep the actual scene unobstructed. Concrete stories do not need a lesson card.
     return frame
+
 
 # ============================================================
 # AUDIO / SUBTITLES
@@ -1360,7 +1418,7 @@ def render_video(story, duration):
         print(stderr)
         raise RuntimeError(
             "FFmpeg closed the video pipe unexpectedly."
-    )
+            )
 
 
 # ============================================================
